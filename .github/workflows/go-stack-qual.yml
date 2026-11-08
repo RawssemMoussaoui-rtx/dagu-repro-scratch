@@ -33,7 +33,7 @@ jobs:
           )
 
           func main() {
-            time.Sleep(2 * time.Second)
+            time.Sleep(10 * time.Second)
             f, err := os.CreateTemp("", "base.yaml.tmp.*")
             if err != nil {
               fmt.Println("CREATE_ERR", err)
@@ -67,9 +67,13 @@ jobs:
         id: slide
         run: |
           "$RUNNER_TEMP/smoke" &
-          SMOKE_PID=$!
-          sleep 1
-          RUNTIME_ADDR=$(vmmap "$SMOKE_PID" 2>/dev/null | awk '/__TEXT/ && /smoke/ {match($0, /0x[0-9a-fA-F]+/); print substr($0, RSTART, RLENGTH); exit}' || true)
+          sleep 3
+          SMOKE_PID=$(pgrep -f "^$RUNNER_TEMP/smoke$" | head -1)
+          if [ -z "$SMOKE_PID" ]; then
+            echo "FAIL: could not find smoke process"
+            exit 1
+          fi
+          RUNTIME_ADDR=$(sudo vmmap "$SMOKE_PID" 2>/dev/null | awk '/__TEXT/ && /smoke/ {match($0, /0x[0-9a-fA-F]+/); print substr($0, RSTART, RLENGTH); exit}' || true)
           kill "$SMOKE_PID" 2>/dev/null || true
           wait "$SMOKE_PID" 2>/dev/null || true
           STATIC_ADDR=$(otool -l "$RUNNER_TEMP/smoke" 2>/dev/null | awk '/segname __TEXT/{found=1} found && /vmaddr/{print $2; exit}' || true)
