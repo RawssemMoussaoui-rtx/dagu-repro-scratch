@@ -1,0 +1,64 @@
+name: step2-isolation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolate:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Clone dagu
+        run: |
+          cd "$RUNNER_TEMP"
+          rm -rf dagu
+          git clone https://github.com/dagucloud/dagu.git dagu
+      - name: Fetch target commits
+        run: |
+          cd "$RUNNER_TEMP/dagu"
+          for sha in bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 f3dbc22da43ac50fa1f7038e8f0fcbed068515ef bee8de0b96c90d58b86788f1676f27946eceaecc 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58; do
+            echo "=== FETCH $sha ==="
+            git fetch origin "$sha" >/dev/null 2>&1 && echo "FETCH_OK $sha" || echo "FETCH_FAIL $sha"
+          done
+      - name: Verify commits exist (read-only metadata)
+        run: |
+          cd "$RUNNER_TEMP/dagu"
+          for sha in bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 f3dbc22da43ac50fa1f7038e8f0fcbed068515ef bee8de0b96c90d58b86788f1676f27946eceaecc 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58; do
+            echo "--- $sha ---"
+            if git cat-file -e "$sha" 2>/dev/null; then
+              echo "EXISTS yes"
+              git log --format='%H %P %s' -n 1 "$sha"
+              echo "type=$(git cat-file -t "$sha")"
+            else
+              echo "EXISTS no"
+            fi
+          done
+      - name: Ancestry relationships (merge-base --is-ancestor)
+        run: |
+          cd "$RUNNER_TEMP/dagu"
+          BASE=f3dbc22da43ac50fa1f7038e8f0fcbed068515ef
+          HEAD=bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59
+          MERGE=bee8de0b96c90d58b86788f1676f27946eceaecc
+          MAIN=42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58
+          echo "=== Directed ancestry: IS A ancestor of B? ==="
+          for pair in "$BASE $HEAD" "$HEAD $BASE" "$HEAD $MERGE" "$MERGE $HEAD" "$BASE $MERGE" "$MERGE $BASE" "$MAIN $HEAD" "$HEAD $MAIN" "$MAIN $BASE" "$BASE $MAIN" "$MAIN $MERGE" "$MERGE $MAIN"; do
+            set -- $pair
+            A=$1; B=$2
+            if git merge-base --is-ancestor "$A" "$B" 2>/dev/null; then
+              echo "ANCESTOR yes  $A -> $B"
+            else
+              echo "ANCESTOR no   $A -> $B"
+            fi
+          done
+          echo "=== MERGE parent count ==="
+          pc=$(git cat-file -p "$MERGE" 2>/dev/null | grep -c '^parent ' || true)
+          echo "parent_count=$pc"
+          echo "=== HEAD subject ==="
+          git log --format='%s' -n 1 "$HEAD"
+          echo "=== MERGE subject ==="
+          git log --format='%s' -n 1 "$MERGE"
+          echo "=== MAIN subject ==="
+          git log --format='%s' -n 1 "$MAIN"
