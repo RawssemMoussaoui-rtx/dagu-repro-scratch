@@ -1,0 +1,101 @@
+name: exp-mode-d
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exp-d-pr-head:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Assert PR head SHA
+        run: |
+          EXPECTED="bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59"
+          echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
+      - name: Install Go 1.27.3
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
+          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
+          tar -xzf go1.27.3.darwin-arm64.tar.gz
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          go version
+      - name: Clone dagu at PR head
+        run: |
+          cd "$RUNNER_TEMP"
+          rm -rf dagu
+          git clone https://github.com/SCcagg5/dagu.git dagu
+          cd dagu
+          git fetch origin refs/pull/3156/head:pr-head
+          git checkout pr-head
+          ACTUAL=$(git rev-parse HEAD)
+          echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
+          if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
+          echo "SHA_ASSERT_OK: $ACTUAL"
+      - name: Run Mode D revision comparison (PR head)
+        run: |
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          PKG="./internal/service/frontend/api/v1"
+          N=10
+          for i in $(seq 1 $N); do
+            start=$(date +%s)
+            out="$RUNNER_TEMP/out_prhead_D_$i.txt"
+            if go test $PKG -run TestAPIKeys_DeleteNotFound -count=1 > "$out" 2>&1; then
+              end=$(date +%s)
+              echo "RUN $i PASS D duration=$((end-start))s"
+            else
+              end=$(date +%s)
+              echo "RUN $i FAIL D duration=$((end-start))s"
+            fi
+          done
+          echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
+
+  exp-d-main:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Assert main baseline SHA
+        run: |
+          EXPECTED="42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58"
+          echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
+      - name: Install Go 1.27.3
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
+          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
+          tar -xzf go1.27.3.darwin-arm64.tar.gz
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          go version
+      - name: Clone dagu at main baseline
+        run: |
+          cd "$RUNNER_TEMP"
+          rm -rf dagu
+          git clone https://github.com/dagucloud/dagu.git dagu
+          cd dagu
+          git checkout "$EXPECTED_REV"
+          ACTUAL=$(git rev-parse HEAD)
+          echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
+          if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
+          echo "SHA_ASSERT_OK: $ACTUAL"
+      - name: Run Mode D revision comparison (main baseline)
+        run: |
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          PKG="./internal/service/frontend/api/v1"
+          N=10
+          for i in $(seq 1 $N); do
+            start=$(date +%s)
+            out="$RUNNER_TEMP/out_main_D_$i.txt"
+            if go test $PKG -run TestAPIKeys_DeleteNotFound -count=1 > "$out" 2>&1; then
+              end=$(date +%s)
+              echo "RUN $i PASS D duration=$((end-start))s"
+            else
+              end=$(date +%s)
+              echo "RUN $i FAIL D duration=$((end-start))s"
+            fi
+          done
+          echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV

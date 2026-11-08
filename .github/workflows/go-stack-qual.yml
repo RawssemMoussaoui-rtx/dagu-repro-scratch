@@ -1,0 +1,126 @@
+name: go-stack-qual
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Install Go 1.27.3
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
+          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
+          tar -xzf go1.27.3.darwin-arm64.tar.gz
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          go version
+          go env GOOS GOARCH
+      - name: Write Go smoke program
+        run: |
+          cat > "$RUNNER_TEMP/smoke.go" <<'EOF'
+          package main
+
+          import (
+            "fmt"
+            "os"
+          )
+
+          func main() {
+            f, err := os.CreateTemp("", "base.yaml.tmp.*")
+            if err != nil {
+              fmt.Println("CREATE_ERR", err)
+              os.Exit(1)
+            }
+            name := f.Name()
+            defer os.Remove(name)
+            _, err = f.WriteString("payload\n")
+            if err != nil {
+              fmt.Println("WRITE_ERR", err)
+              os.Exit(1)
+            }
+            if err := f.Sync(); err != nil {
+              fmt.Println("SYNC_ERR", err)
+              os.Exit(1)
+            }
+            if err := f.Close(); err != nil {
+              fmt.Println("CLOSE_ERR", err)
+              os.Exit(1)
+            }
+            fmt.Println("OK", name)
+          }
+          EOF
+      - name: Build Go smoke binary
+        run: |
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          go build -o "$RUNNER_TEMP/smoke" "$RUNNER_TEMP/smoke.go"
+      - name: DTrace Go smoke trace with ustack
+        run: |
+          set +e
+          sudo dtrace -n '
+          syscall::openat:entry /execname == "smoke"/ {
+            self->dirfd = arg0;
+            self->path = copyinstr(arg1, 256);
+          }
+          syscall::openat:return /execname == "smoke"/ {
+            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d ts=%llu\n", pid, tid, self->dirfd, self->path, arg0, timestamp);
+            self->path = 0;
+          }
+          syscall::open:entry /execname == "smoke"/ {
+            self->path = copyinstr(arg0, 256);
+          }
+          syscall::open:return /execname == "smoke"/ {
+            printf("OPEN pid=%d tid=%d path=%s fd=%d ts=%llu\n", pid, tid, self->path, arg0, timestamp);
+            self->path = 0;
+          }
+          syscall::close:entry /execname == "smoke"/ {
+            self->fd = arg0;
+            printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp);
+            ustack();
+            printf("---USTACK_END---\n");
+          }
+          syscall::close:return /execname == "smoke"/ {
+            printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp);
+          }
+          ' -c "$RUNNER_TEMP/smoke" > "$RUNNER_TEMP/dtrace_out.txt" 2>&1
+          DTRACE_RC=$?
+          set -e
+          echo "DTRACE_RC=$DTRACE_RC"
+          wc -l "$RUNNER_TEMP/dtrace_out.txt" 2>/dev/null || true
+          cat "$RUNNER_TEMP/dtrace_out.txt" 2>/dev/null || true
+      - name: Validate DTrace capture completeness
+        run: |
+          OUT="$RUNNER_TEMP/dtrace_out.txt"
+          RC=0
+          if [ ! -f "$OUT" ]; then echo "FAIL: no dtrace output"; exit 1; fi
+          grep -q "OPENAT" "$OUT" || { echo "FAIL: no openat captured"; RC=1; }
+          grep -q "OPEN " "$OUT" || { echo "FAIL: no open captured"; RC=1; }
+          grep -q "CLOSE_ENTRY" "$OUT" || { echo "FAIL: no close entry captured"; RC=1; }
+          grep -q "CLOSE_RETURN" "$OUT" || { echo "FAIL: no close return captured"; RC=1; }
+          grep -q "---USTACK_END---" "$OUT" || { echo "FAIL: no ustack captured"; RC=1; }
+          CLOSE_FD=$(grep "CLOSE_RETURN" "$OUT" | head -1 | awk '{print $6}')
+          grep -q "CLOSE_RETURN pid=[0-9]* tid=[0-9]* fd=$CLOSE_FD retval=0" "$OUT" || { echo "FAIL: no successful close return for fd=$CLOSE_FD"; RC=1; }
+          if [ "$RC" -ne 0 ]; then exit 1; fi
+          echo "QUAL_PASS: all DTrace capture checks passed"
+      - name: Symbolize ustack addresses
+        run: |
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          OUT="$RUNNER_TEMP/dtrace_out.txt"
+          echo "=== go tool nm symbol table sample ==="
+          go tool nm "$RUNNER_TEMP/smoke" 2>/dev/null | grep -iE "main\.main|os\.\(.*file\)\.(Close|Write|Sync)|runtime\." | sort | head -40 || true
+          echo "=== Address-to-symbol resolution ==="
+          grep -oE "0x[0-9a-fA-F]{6,}" "$OUT" | sort -u | head -40 | while read -r addr; do
+            sym=$(go tool nm "$RUNNER_TEMP/smoke" 2>/dev/null | awk -v a="$addr" 'BEGIN{o=strtonum("0x" substr(a,3))} $1+0==o {print $3; exit}' || true)
+            line=$(go tool addr2line -e "$RUNNER_TEMP/smoke" "$addr" 2>/dev/null || echo 'unmapped')
+            echo "ADDR $addr SYM=${sym:-<none>} -> $line"
+          done
+          echo "=== Go frame detection ==="
+          if grep -qE "main\.main|os\.\(.*file\)\.(Close|Write|Sync)" "$OUT" 2>/dev/null; then
+            echo "GO_FRAMES: Go user-space frames found in ustack"
+          else
+            echo "GO_FRAMES: NO Go user-space frames found in ustack - STOP and report"
+          fi
