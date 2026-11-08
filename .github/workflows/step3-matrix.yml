@@ -34,6 +34,7 @@ jobs:
           rm -rf dagu
           git clone https://github.com/dagucloud/dagu.git dagu
           cd dagu
+          git fetch origin "${{ matrix.revision }}" >/dev/null 2>&1 && echo "FETCH_OK ${{ matrix.revision }}" || echo "FETCH_FAIL ${{ matrix.revision }}"
           git checkout "${{ matrix.revision }}"
           git rev-parse --short HEAD
           echo "REVISION=${{ matrix.revision }}" >> $GITHUB_ENV
@@ -90,6 +91,7 @@ jobs:
           rm -rf dagu
           git clone https://github.com/dagucloud/dagu.git dagu
           cd dagu
+          git fetch origin f3dbc22da43ac50fa1f7038e8f0fcbed068515ef >/dev/null 2>&1 && echo "FETCH_OK f3dbc22" || echo "FETCH_FAIL f3dbc22"
           git checkout f3dbc22da43ac50fa1f7038e8f0fcbed068515ef
           git rev-parse --short HEAD
           echo "REVISION=f3dbc22da43ac50fa1f7038e8f0fcbed068515ef" >> $GITHUB_ENV
