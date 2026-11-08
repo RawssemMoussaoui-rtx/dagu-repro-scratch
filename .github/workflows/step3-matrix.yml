@@ -7,17 +7,9 @@ permissions:
   contents: read
 
 jobs:
-  matrix-test:
+  sequential:
     runs-on: macos-26
     timeout-minutes: 60
-    strategy:
-      max-parallel: 6
-      fail-fast: false
-      matrix:
-        revision:
-          - bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59
-          - 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58
-        experiment: [A, B, C]
     steps:
       - name: Install Go 1.27.3
         run: |
@@ -28,96 +20,54 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go version
           go env GOMAXPROCS
-      - name: Clone dagu at revision
+      - name: Clone dagu
         run: |
           cd "$RUNNER_TEMP"
           rm -rf dagu
           git clone https://github.com/dagucloud/dagu.git dagu
-          cd dagu
-          git fetch origin "${{ matrix.revision }}" >/dev/null 2>&1 && echo "FETCH_OK ${{ matrix.revision }}" || echo "FETCH_FAIL ${{ matrix.revision }}"
-          git checkout "${{ matrix.revision }}"
-          git rev-parse --short HEAD
-          echo "REVISION=${{ matrix.revision }}" >> $GITHUB_ENV
-          echo "EXPERIMENT=${{ matrix.experiment }}" >> $GITHUB_ENV
       - name: Record environment
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           echo "GOMAXPROCS=$(go env GOMAXPROCS)"
           echo "GOOS=$(go env GOOS) GOARCH=$(go env GOARCH)"
           nproc || true
-      - name: Run experiment
+      - name: Run experiments sequentially
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
-          case "${EXPERIMENT}" in
-            A) N=5; TEST_OPTS=(-run TestAPIKeys_DeleteNotFound -v); DESC="isolated TestAPIKeys_DeleteNotFound" ;;
-            B) N=20; TEST_OPTS=(); DESC="whole package default parallel" ;;
-            C) N=5; TEST_OPTS=(-parallel=1); DESC="whole package -parallel=1" ;;
-            *) N=1; TEST_OPTS=(); DESC="unknown" ;;
-          esac
-          echo "EXPERIMENT=$DESC revision=${REVISION} invocations=$N GOMAXPROCS=$(go env GOMAXPROCS)"
-          for i in $(seq 1 $N); do
-            start=$(date +%s)
-            out="$RUNNER_TEMP/out_${REVISION}_${EXPERIMENT}_$i.txt"
-            if go test $PKG "${TEST_OPTS[@]}" -count=1 > "$out" 2>&1; then
-              end=$(date +%s)
-              echo "RUN $i PASS $DESC duration=$((end-start))s"
-            else
-              end=$(date +%s)
-              echo "RUN $i FAIL $DESC duration=$((end-start))s"
-              grep -E "^(--- FAIL|FAIL|ok |panic|no test files|build failed|cannot find|package )" "$out" 2>/dev/null | head -20 || true
-            fi
-            if [ "${EXPERIMENT}" = "A" ]; then
-              if grep -q "TestAPIKeys_DeleteNotFound" "$out" 2>/dev/null; then echo "  test_ran=yes"; else echo "  test_ran=NO (TestAPIKeys_DeleteNotFound not in output)"; fi
-            fi
-          done
-
-  pr-base-control:
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - name: Install Go 1.27.3
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
-          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
-          tar -xzf go1.27.3.darwin-arm64.tar.gz
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          go version
-      - name: Clone dagu at PR base
-        run: |
-          cd "$RUNNER_TEMP"
-          rm -rf dagu
-          git clone https://github.com/dagucloud/dagu.git dagu
-          cd dagu
-          git fetch origin f3dbc22da43ac50fa1f7038e8f0fcbed068515ef >/dev/null 2>&1 && echo "FETCH_OK f3dbc22" || echo "FETCH_FAIL f3dbc22"
-          git checkout f3dbc22da43ac50fa1f7038e8f0fcbed068515ef
-          git rev-parse --short HEAD
-          echo "REVISION=f3dbc22da43ac50fa1f7038e8f0fcbed068515ef" >> $GITHUB_ENV
-      - name: Record environment
-        run: |
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          TIMEOUT="-timeout 180s"
+          run_rev() {
+            local rev=$1; local exp=$2; local n=$3; local desc=$4; shift 4
+            local opts=("$@")
+            echo "=== REV=$rev EXP=$exp DESC='$desc' N=$n ==="
+            git fetch origin "$rev" >/dev/null 2>&1 && echo "FETCH_OK" || echo "FETCH_FAIL"
+            if git checkout "$rev" >/dev/null 2>&1; then echo "CHECKOUT_OK"; else echo "CHECKOUT_FAIL"; fi
+            git rev-parse --short HEAD 2>/dev/null || true
+            for i in $(seq 1 $n); do
+              start=$(date +%s)
+              out="$RUNNER_TEMP/out_${exp}_$i.txt"
+              if go test $TIMEOUT -count=1 "${opts[@]}" $PKG > "$out" 2>&1; then
+                end=$(date +%s)
+                echo "RUN $i PASS '$desc' duration=$((end-start))s"
+              else
+                end=$(date +%s)
+                echo "RUN $i FAIL '$desc' duration=$((end-start))s"
+                grep -E "^(--- FAIL|^FAIL|^ok |panic|no test files|build failed|cannot find|package )" "$out" 2>/dev/null | head -20 || true
+              fi
+              if [ "$exp" = "A" ]; then
+                if grep -q "TestAPIKeys_DeleteNotFound" "$out" 2>/dev/null; then echo "  test_ran=yes"; else echo "  test_ran=NO"; fi
+              fi
+            done
+          }
           echo "GOMAXPROCS=$(go env GOMAXPROCS)"
-          echo "GOOS=$(go env GOOS) GOARCH=$(go env GOARCH)"
-          nproc || true
-      - name: Run PR base whole package
-        run: |
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          PKG="./internal/service/frontend/api/v1"
-          N=5
-          DESC="whole package default parallel (PR base control)"
-          echo "EXPERIMENT=$DESC revision=f3dbc22da43ac50fa1f7038e8f0fcbed068515ef invocations=$N GOMAXPROCS=$(go env GOMAXPROCS)"
-          for i in $(seq 1 $N); do
-            start=$(date +%s)
-            out="$RUNNER_TEMP/out_base_$i.txt"
-            if go test $PKG -count=1 > "$out" 2>&1; then
-              end=$(date +%s)
-              echo "RUN $i PASS $DESC duration=$((end-start))s"
-            else
-              end=$(date +%s)
-              echo "RUN $i FAIL $DESC duration=$((end-start))s"
-              grep -E "^(--- FAIL|FAIL|ok |panic|no test files|build failed|cannot find|package )" "$out" 2>/dev/null | head -20 || true
-            fi
-          done
+          echo "--- PR HEAD bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 ---"
+          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 A 5 "isolated TestAPIKeys_DeleteNotFound" -run TestAPIKeys_DeleteNotFound -v
+          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 B 20 "whole package default parallel"
+          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 C 5 "whole package -parallel=1" -parallel=1
+          echo "--- MAIN BASELINE 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 ---"
+          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 A 5 "isolated TestAPIKeys_DeleteNotFound" -run TestAPIKeys_DeleteNotFound -v
+          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 B 20 "whole package default parallel"
+          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 C 5 "whole package -parallel=1" -parallel=1
+          echo "--- PR BASE CONTROL f3dbc22da43ac50fa1f7038e8f0fcbed068515ef ---"
+          run_rev f3dbc22da43ac50fa1f7038e8f0fcbed068515ef B 5 "whole package default parallel (PR base control)"
