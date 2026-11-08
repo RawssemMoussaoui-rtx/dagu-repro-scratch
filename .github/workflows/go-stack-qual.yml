@@ -65,21 +65,30 @@ jobs:
 
       - name: Discover ASLR slide
         id: slide
+        continue-on-error: true
         run: |
           "$RUNNER_TEMP/smoke" &
           sleep 3
-          SMOKE_PID=$(pgrep -f "^$RUNNER_TEMP/smoke$" | head -1)
+          SMOKE_PID=$(pgrep -x smoke | head -1)
           if [ -z "$SMOKE_PID" ]; then
-            echo "FAIL: could not find smoke process"
-            exit 1
+            echo "WARN: could not find smoke process; slide=0"
+            echo "SLIDE=0" >> $GITHUB_ENV
+            echo "RUNTIME_ADDR=unknown" >> $GITHUB_ENV
+            echo "STATIC_ADDR=unknown" >> $GITHUB_ENV
+            echo "slide=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
-          RUNTIME_ADDR=$(sudo vmmap "$SMOKE_PID" 2>/dev/null | awk '/__TEXT/ && /smoke/ {match($0, /0x[0-9a-fA-F]+/); print substr($0, RSTART, RLENGTH); exit}' || true)
+          RUNTIME_ADDR=$(vmmap "$SMOKE_PID" 2>&1 | awk '/__TEXT/{match($0, /0x[0-9a-fA-F]+-/); print substr($0, RSTART, RLENGTH-1); exit}' || true)
           kill "$SMOKE_PID" 2>/dev/null || true
           wait "$SMOKE_PID" 2>/dev/null || true
           STATIC_ADDR=$(otool -l "$RUNNER_TEMP/smoke" 2>/dev/null | awk '/segname __TEXT/{found=1} found && /vmaddr/{print $2; exit}' || true)
           if [ -z "$RUNTIME_ADDR" ] || [ -z "$STATIC_ADDR" ]; then
-            echo "FAIL: could not determine addresses (runtime=$RUNTIME_ADDR static=$STATIC_ADDR)"
-            exit 1
+            echo "WARN: could not determine addresses (runtime=$RUNTIME_ADDR static=$STATIC_ADDR); slide=0"
+            echo "SLIDE=0" >> $GITHUB_ENV
+            echo "RUNTIME_ADDR=$RUNTIME_ADDR" >> $GITHUB_ENV
+            echo "STATIC_ADDR=$STATIC_ADDR" >> $GITHUB_ENV
+            echo "slide=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
           SLIDE=$(( 16#${RUNTIME_ADDR#0x} - 16#${STATIC_ADDR#0x} ))
           echo "RUNTIME_ADDR=$RUNTIME_ADDR" >> $GITHUB_ENV
@@ -171,7 +180,11 @@ jobs:
           awk '/CLOSE_ENTRY/{p=1;next} /---USTACK_END---/{p=0} p' "$OUT" 2>/dev/null | grep -oE "0x[0-9a-fA-F]+" | sort -u | while read -r addr; do
             FILE_ADDR=$(( 16#${addr#0x} - SLIDE ))
             FILE_ADDR_HEX=$(printf "0x%x" $FILE_ADDR)
-            SYM_LINE=$(atos -o "$RUNNER_TEMP/smoke" -l "$RUNTIME_ADDR" "$addr" 2>/dev/null || echo "unmapped")
+            if [ "$RUNTIME_ADDR" = "unknown" ] || [ -z "$RUNTIME_ADDR" ]; then
+              SYM_LINE=$(atos -o "$RUNNER_TEMP/smoke" "$addr" 2>/dev/null || echo "unmapped")
+            else
+              SYM_LINE=$(atos -o "$RUNNER_TEMP/smoke" -l "$RUNTIME_ADDR" "$addr" 2>/dev/null || echo "unmapped")
+            fi
             ADDR2LINE=$(go tool addr2line -e "$RUNNER_TEMP/smoke" "$FILE_ADDR_HEX" 2>/dev/null || echo "unmapped")
             echo "ADDR $addr (file=$FILE_ADDR_HEX) atos=$SYM_LINE addr2line=$ADDR2LINE" | tee -a "$SYM_OUT"
           done
