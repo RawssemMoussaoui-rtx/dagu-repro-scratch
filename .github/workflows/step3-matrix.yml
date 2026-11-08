@@ -19,7 +19,7 @@ jobs:
           tar -xzf go1.27.3.darwin-arm64.tar.gz
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go version
-          go env GOMAXPROCS
+          go env GOMAXPROCS || true
       - name: Clone dagu
         run: |
           cd "$RUNNER_TEMP"
@@ -28,16 +28,16 @@ jobs:
       - name: Record environment
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          echo "GOMAXPROCS=$(go env GOMAXPROCS)"
+          echo "GOMAXPROCS_ENV=${GOMAXPROCS:-<unset>}"
+          echo "CPU=$(sysctl -n hw.ncpu || true)"
           echo "GOOS=$(go env GOOS) GOARCH=$(go env GOARCH)"
-          nproc || true
       - name: Run experiments (compile once per revision, run binary many times)
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
           BIN="$RUNNER_TEMP/test.bin"
-          echo "GOMAXPROCS=$(go env GOMAXPROCS)"
+          echo "CPU=$(sysctl -n hw.ncpu || true)"
           run_rev() {
             local rev=$1
             echo "=== REV=$rev ==="
@@ -51,7 +51,7 @@ jobs:
               echo "COMPILE FAIL"; cat "$RUNNER_TEMP/compile_$rev.txt" | head -40; return
             fi
             run_n() {
-              local exp=$2; local n=$3; local desc=$4; shift 4
+              local exp=$1; local n=$2; local desc=$3; shift 3
               local args=("$@")
               echo "--- $desc N=$n ---"
               local i
