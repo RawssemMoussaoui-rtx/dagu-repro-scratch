@@ -1,0 +1,46 @@
+name: Environment Verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: macOS version info
+        run: |
+          sw_vers
+          uname -a
+          uname -m
+          arch
+          sysctl -n hw.optional.arm64 || true
+      - name: Install Go 1.27.3
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
+          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
+          tar -xzf go1.27.3.darwin-arm64.tar.gz
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          go version
+          go env GOOS GOARCH
+      - name: DTrace and SIP check
+        run: |
+          command -v dtrace || echo "dtrace not found"
+          csrutil status || true
+      - name: DTrace smoke test
+        run: |
+          cat > "$RUNNER_TEMP/dtrace_smoke.c" <<'EOF'
+          #include <unistd.h>
+          #include <fcntl.h>
+          int main(void) {
+              int fd = open("/dev/null", O_RDONLY);
+              close(fd);
+              return 0;
+          }
+          EOF
+          cc -o "$RUNNER_TEMP/dtrace_smoke" "$RUNNER_TEMP/dtrace_smoke.c"
+          sudo dtrace -n 'syscall:::entry /execname == "dtrace_smoke" && (probefunc == "open" || probefunc == "close")/ { printf("%d %d %d %s %d %d\n", walltimestamp, pid, tid, probefunc, arg0, arg1); } syscall:::return /execname == "dtrace_smoke" && probefunc == "close"/ { printf("%d %d %d %s ret=%d\n", walltimestamp, pid, tid, probefunc, arg0); }' -c "$RUNNER_TEMP/dtrace_smoke" || echo "dtrace smoke test failed or restricted"
