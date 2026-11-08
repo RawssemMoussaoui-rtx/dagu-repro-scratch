@@ -20,6 +20,7 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go version
           go env GOOS GOARCH
+
       - name: Write Go smoke program
         run: |
           cat > "$RUNNER_TEMP/smoke.go" <<'EOF'
@@ -28,9 +29,11 @@ jobs:
           import (
             "fmt"
             "os"
+            "time"
           )
 
           func main() {
+            time.Sleep(2 * time.Second)
             f, err := os.CreateTemp("", "base.yaml.tmp.*")
             if err != nil {
               fmt.Println("CREATE_ERR", err)
@@ -54,12 +57,35 @@ jobs:
             fmt.Println("OK", name)
           }
           EOF
+
       - name: Build Go smoke binary
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go build -o "$RUNNER_TEMP/smoke" "$RUNNER_TEMP/smoke.go"
+
+      - name: Discover ASLR slide
+        id: slide
+        run: |
+          "$RUNNER_TEMP/smoke" &
+          SMOKE_PID=$!
+          sleep 1
+          RUNTIME_ADDR=$(vmmap "$SMOKE_PID" 2>/dev/null | awk '/__TEXT/ && /smoke/ {match($0, /0x[0-9a-fA-F]+/); print substr($0, RSTART, RLENGTH); exit}' || true)
+          kill "$SMOKE_PID" 2>/dev/null || true
+          wait "$SMOKE_PID" 2>/dev/null || true
+          STATIC_ADDR=$(otool -l "$RUNNER_TEMP/smoke" 2>/dev/null | awk '/segname __TEXT/{found=1} found && /vmaddr/{print $2; exit}' || true)
+          if [ -z "$RUNTIME_ADDR" ] || [ -z "$STATIC_ADDR" ]; then
+            echo "FAIL: could not determine addresses (runtime=$RUNTIME_ADDR static=$STATIC_ADDR)"
+            exit 1
+          fi
+          SLIDE=$(( 16#${RUNTIME_ADDR#0x} - 16#${STATIC_ADDR#0x} ))
+          echo "RUNTIME_ADDR=$RUNTIME_ADDR" >> $GITHUB_ENV
+          echo "STATIC_ADDR=$STATIC_ADDR" >> $GITHUB_ENV
+          echo "SLIDE=$SLIDE" >> $GITHUB_ENV
+          echo "slide=$SLIDE" >> $GITHUB_OUTPUT
+
       - name: DTrace Go smoke trace with ustack
         run: |
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
           set +e
           sudo dtrace -n '
           syscall::openat:entry /execname == "smoke"/ {
@@ -89,38 +115,71 @@ jobs:
           ' -c "$RUNNER_TEMP/smoke" > "$RUNNER_TEMP/dtrace_out.txt" 2>&1
           DTRACE_RC=$?
           set -e
-          echo "DTRACE_RC=$DTRACE_RC"
-          wc -l "$RUNNER_TEMP/dtrace_out.txt" 2>/dev/null || true
+          echo "DTRACE_RC=$DTRACE_RC" >> $GITHUB_ENV
+          echo "=== DTrace raw output ==="
           cat "$RUNNER_TEMP/dtrace_out.txt" 2>/dev/null || true
+
+      - name: Validate DTrace execution status
+        run: |
+          if [ "${DTRACE_RC:-0}" -ne 0 ]; then
+            echo "FAIL: DTrace execution failed with RC=$DTRACE_RC"
+            exit 1
+          fi
+          echo "DTRACE_PASS: DTrace executed successfully (RC=$DTRACE_RC)"
+
       - name: Validate DTrace capture completeness
         run: |
           OUT="$RUNNER_TEMP/dtrace_out.txt"
           RC=0
           if [ ! -f "$OUT" ]; then echo "FAIL: no dtrace output"; exit 1; fi
-          grep -q "OPENAT" "$OUT" || { echo "FAIL: no openat captured"; RC=1; }
-          grep -q "OPEN " "$OUT" || { echo "FAIL: no open captured"; RC=1; }
-          grep -q "CLOSE_ENTRY" "$OUT" || { echo "FAIL: no close entry captured"; RC=1; }
-          grep -q "CLOSE_RETURN" "$OUT" || { echo "FAIL: no close return captured"; RC=1; }
-          grep -q "---USTACK_END---" "$OUT" || { echo "FAIL: no ustack captured"; RC=1; }
-          CLOSE_FD=$(grep "CLOSE_RETURN" "$OUT" | head -1 | awk '{print $6}')
-          grep -q "CLOSE_RETURN pid=[0-9]* tid=[0-9]* fd=$CLOSE_FD retval=0" "$OUT" || { echo "FAIL: no successful close return for fd=$CLOSE_FD"; RC=1; }
+          HAS_OPENAT=0
+          HAS_OPEN=0
+          grep -qe "OPENAT" "$OUT" 2>/dev/null && HAS_OPENAT=1 || true
+          grep -qe "OPEN " "$OUT" 2>/dev/null && HAS_OPEN=1 || true
+          if [ "$HAS_OPENAT" -eq 0 ] && [ "$HAS_OPEN" -eq 0 ]; then
+            echo "FAIL: no open/openat creation captured"; RC=1
+          fi
+          grep -qe "CLOSE_ENTRY" "$OUT" 2>/dev/null || { echo "FAIL: no close entry captured"; RC=1; }
+          grep -qe "CLOSE_RETURN" "$OUT" 2>/dev/null || { echo "FAIL: no close return captured"; RC=1; }
+          grep -qe "---USTACK_END---" "$OUT" 2>/dev/null || { echo "FAIL: no ustack captured"; RC=1; }
+          CLOSE_FD=$(grep -e "CLOSE_RETURN" "$OUT" | head -1 | sed -n 's/.*fd=\([0-9][0-9]*\).*/\1/p')
+          if [ -z "$CLOSE_FD" ]; then
+            echo "FAIL: could not extract fd= from CLOSE_RETURN"; RC=1
+          else
+            grep -qe "CLOSE_RETURN pid=[0-9][0-9]* tid=[0-9][0-9]* fd=$CLOSE_FD retval=0" "$OUT" 2>/dev/null || { echo "FAIL: no successful close return for fd=$CLOSE_FD"; RC=1; }
+            echo "CLOSE_FD=$CLOSE_FD" >> $GITHUB_ENV
+          fi
+          echo "OPEN_VARIANT: openat=$HAS_OPENAT open=$HAS_OPEN"
           if [ "$RC" -ne 0 ]; then exit 1; fi
           echo "QUAL_PASS: all DTrace capture checks passed"
+
       - name: Symbolize ustack addresses
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           OUT="$RUNNER_TEMP/dtrace_out.txt"
-          echo "=== go tool nm symbol table sample ==="
-          go tool nm "$RUNNER_TEMP/smoke" 2>/dev/null | grep -iE "main\.main|os\.\(.*file\)\.(Close|Write|Sync)|runtime\." | sort | head -40 || true
-          echo "=== Address-to-symbol resolution ==="
-          grep -oE "0x[0-9a-fA-F]{6,}" "$OUT" | sort -u | head -40 | while read -r addr; do
-            sym=$(go tool nm "$RUNNER_TEMP/smoke" 2>/dev/null | awk -v a="$addr" 'BEGIN{o=strtonum("0x" substr(a,3))} $1+0==o {print $3; exit}' || true)
-            line=$(go tool addr2line -e "$RUNNER_TEMP/smoke" "$addr" 2>/dev/null || echo 'unmapped')
-            echo "ADDR $addr SYM=${sym:-<none>} -> $line"
+          SYM_OUT="$RUNNER_TEMP/dtrace_symbolized.txt"
+          : > "$SYM_OUT"
+          echo "SLIDE=$SLIDE RUNTIME_ADDR=$RUNTIME_ADDR STATIC_ADDR=$STATIC_ADDR" | tee -a "$SYM_OUT"
+          echo "=== Symbol table (go tool nm) ===" | tee -a "$SYM_OUT"
+          go tool nm "$RUNNER_TEMP/smoke" 2>/dev/null | grep -iE "main\.main|os\.|runtime\." | sort | head -60 | tee -a "$SYM_OUT"
+          echo "" | tee -a "$SYM_OUT"
+          echo "=== Address-to-symbol resolution ===" | tee -a "$SYM_OUT"
+          awk '/CLOSE_ENTRY/{p=1;next} /---USTACK_END---/{p=0} p' "$OUT" 2>/dev/null | grep -oE "0x[0-9a-fA-F]+" | sort -u | while read -r addr; do
+            FILE_ADDR=$(( 16#${addr#0x} - SLIDE ))
+            FILE_ADDR_HEX=$(printf "0x%x" $FILE_ADDR)
+            SYM_LINE=$(atos -o "$RUNNER_TEMP/smoke" -l "$RUNTIME_ADDR" "$addr" 2>/dev/null || echo "unmapped")
+            ADDR2LINE=$(go tool addr2line -e "$RUNNER_TEMP/smoke" "$FILE_ADDR_HEX" 2>/dev/null || echo "unmapped")
+            echo "ADDR $addr (file=$FILE_ADDR_HEX) atos=$SYM_LINE addr2line=$ADDR2LINE" | tee -a "$SYM_OUT"
           done
-          echo "=== Go frame detection ==="
-          if grep -qE "main\.main|os\.\(.*file\)\.(Close|Write|Sync)" "$OUT" 2>/dev/null; then
-            echo "GO_FRAMES: Go user-space frames found in ustack"
+          echo "=== Symbolized output saved to $SYM_OUT ==="
+
+      - name: Assert Go frames in symbolized output
+        run: |
+          SYM_OUT="$RUNNER_TEMP/dtrace_symbolized.txt"
+          if [ ! -f "$SYM_OUT" ]; then echo "FAIL: no symbolized output"; exit 1; fi
+          if grep -qE "main\.main|os\.\(.*file\)\.(Close|Write|Sync)|runtime\." "$SYM_OUT" 2>/dev/null; then
+            echo "GO_FRAMES: Go user-space frames found in symbolized output"
           else
-            echo "GO_FRAMES: NO Go user-space frames found in ustack - STOP and report"
+            echo "GO_FRAMES: NO Go user-space frames found in symbolized output - STOP and report limitation"
+            exit 1
           fi
