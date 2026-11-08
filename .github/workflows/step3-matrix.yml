@@ -31,43 +31,53 @@ jobs:
           echo "GOMAXPROCS=$(go env GOMAXPROCS)"
           echo "GOOS=$(go env GOOS) GOARCH=$(go env GOARCH)"
           nproc || true
-      - name: Run experiments sequentially
+      - name: Run experiments (compile once per revision, run binary many times)
         run: |
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
-          TIMEOUT="-timeout 180s"
-          run_rev() {
-            local rev=$1; local exp=$2; local n=$3; local desc=$4; shift 4
-            local opts=("$@")
-            echo "=== REV=$rev EXP=$exp DESC='$desc' N=$n ==="
-            git fetch origin "$rev" >/dev/null 2>&1 && echo "FETCH_OK" || echo "FETCH_FAIL"
-            if git checkout "$rev" >/dev/null 2>&1; then echo "CHECKOUT_OK"; else echo "CHECKOUT_FAIL"; fi
-            git rev-parse --short HEAD 2>/dev/null || true
-            for i in $(seq 1 $n); do
-              start=$(date +%s)
-              out="$RUNNER_TEMP/out_${exp}_$i.txt"
-              if go test $TIMEOUT -count=1 "${opts[@]}" $PKG > "$out" 2>&1; then
-                end=$(date +%s)
-                echo "RUN $i PASS '$desc' duration=$((end-start))s"
-              else
-                end=$(date +%s)
-                echo "RUN $i FAIL '$desc' duration=$((end-start))s"
-                grep -E "^(--- FAIL|^FAIL|^ok |panic|no test files|build failed|cannot find|package )" "$out" 2>/dev/null | head -20 || true
-              fi
-              if [ "$exp" = "A" ]; then
-                if grep -q "TestAPIKeys_DeleteNotFound" "$out" 2>/dev/null; then echo "  test_ran=yes"; else echo "  test_ran=NO"; fi
-              fi
-            done
-          }
+          BIN="$RUNNER_TEMP/test.bin"
           echo "GOMAXPROCS=$(go env GOMAXPROCS)"
+          run_rev() {
+            local rev=$1
+            echo "=== REV=$rev ==="
+            git fetch origin "$rev" >/dev/null 2>&1 && echo "FETCH_OK" || echo "FETCH_FAIL"
+            git checkout "$rev" >/dev/null 2>&1 && echo "CHECKOUT_OK" || echo "CHECKOUT_FAIL"
+            git rev-parse --short HEAD 2>/dev/null || true
+            echo "--- compile test binary ---"
+            if go test -c -o "$BIN" $PKG > "$RUNNER_TEMP/compile_$rev.txt" 2>&1; then
+              echo "COMPILE OK"
+            else
+              echo "COMPILE FAIL"; cat "$RUNNER_TEMP/compile_$rev.txt" | head -40; return
+            fi
+            run_n() {
+              local exp=$2; local n=$3; local desc=$4; shift 4
+              local args=("$@")
+              echo "--- $desc N=$n ---"
+              local i
+              for i in $(seq 1 $n); do
+                start=$(date +%s)
+                out="$RUNNER_TEMP/out_${rev}_${exp}_$i.txt"
+                if "$BIN" -test.timeout=180s "${args[@]}" > "$out" 2>&1; then
+                  end=$(date +%s)
+                  echo "RUN $i PASS '$desc' duration=$((end-start))s"
+                else
+                  end=$(date +%s)
+                  echo "RUN $i FAIL '$desc' duration=$((end-start))s"
+                  grep -E "^(--- FAIL|^FAIL|^ok |panic)" "$out" 2>/dev/null | head -20 || true
+                fi
+                if [ "$exp" = "A" ]; then
+                  if grep -q "TestAPIKeys_DeleteNotFound" "$out" 2>/dev/null; then echo "  test_ran=yes"; else echo "  test_ran=NO"; fi
+                fi
+              done
+            }
+            run_n A 5 "isolated TestAPIKeys_DeleteNotFound" -test.run TestAPIKeys_DeleteNotFound -test.v
+            run_n B 20 "whole package default parallel"
+            run_n C 5 "whole package -test.parallel=1" -test.parallel=1
+          }
           echo "--- PR HEAD bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 ---"
-          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 A 5 "isolated TestAPIKeys_DeleteNotFound" -run TestAPIKeys_DeleteNotFound -v
-          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 B 20 "whole package default parallel"
-          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59 C 5 "whole package -parallel=1" -parallel=1
+          run_rev bc905d7a96efc3acc25ced36eb1b0aa90f1d1c59
           echo "--- MAIN BASELINE 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 ---"
-          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 A 5 "isolated TestAPIKeys_DeleteNotFound" -run TestAPIKeys_DeleteNotFound -v
-          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 B 20 "whole package default parallel"
-          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58 C 5 "whole package -parallel=1" -parallel=1
+          run_rev 42b0bc8f0fdeea68c0d9cee83f0e11a07c252b58
           echo "--- PR BASE CONTROL f3dbc22da43ac50fa1f7038e8f0fcbed068515ef ---"
-          run_rev f3dbc22da43ac50fa1f7038e8f0fcbed068515ef B 5 "whole package default parallel (PR base control)"
+          run_rev f3dbc22da43ac50fa1f7038e8f0fcbed068515ef
