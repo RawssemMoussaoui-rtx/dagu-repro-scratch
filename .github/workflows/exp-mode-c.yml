@@ -17,42 +17,60 @@ jobs:
           echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
       - name: Install Go 1.27.3
         run: |
+          set -euo pipefail
           cd "$RUNNER_TEMP"
+          rm -f go1.27.3.darwin-arm64.tar.gz
           curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
           echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
           tar -xzf go1.27.3.darwin-arm64.tar.gz
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
           go version
-      - name: Clone dagu at PR head
+      - name: Clone dagu at PR head (canonical base repo, detached)
         run: |
+          set -euo pipefail
           cd "$RUNNER_TEMP"
           rm -rf dagu
-          git clone https://github.com/SCcagg5/dagu.git dagu
+          git clone https://github.com/dagucloud/dagu.git dagu
           cd dagu
-          git fetch origin refs/pull/3156/head:pr-head
-          git checkout pr-head
+          git fetch origin refs/pull/3156/head
+          git checkout --detach FETCH_HEAD
           ACTUAL=$(git rev-parse HEAD)
+          if [ ${#ACTUAL} -ne 40 ]; then echo "FAIL: not a full 40-character SHA: $ACTUAL"; exit 1; fi
           echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
           if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
           echo "SHA_ASSERT_OK: $ACTUAL"
-      - name: Run Mode C whole package -parallel=1 control (PR head)
+      - name: Compile Dagu test binary (PR head)
         run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
+      - name: DTrace-traced test execution (PR head, N runs)
+        run: |
+          set -euo pipefail
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
           N=20
+          FAIL_COUNT=0
           for i in $(seq 1 $N); do
-            start=$(date +%s)
-            out="$RUNNER_TEMP/out_prhead_C_$i.txt"
-            if go test $PKG -parallel=1 -count=1 > "$out" 2>&1; then
-              end=$(date +%s)
-              echo "RUN $i PASS C duration=$((end-start))s"
-            else
-              end=$(date +%s)
-              echo "RUN $i FAIL C duration=$((end-start))s"
-            fi
+            dtrace_out="$RUNNER_TEMP/dtrace_prhead_C_$i.txt"
+            set +e
+            sudo dtrace -n '
+            syscall::openat:entry /execname == "dagu.test"/ { self->dirfd = arg0; self->path = copyinstr(arg1, 256); }
+            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::open:entry /execname == "dagu.test"/ { self->path = copyinstr(arg0, 256); }
+            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
+            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp); self->fd = 0; }
+            ' -c "sh -c '$RUNNER_TEMP/dagu.test -test.parallel=1'" > "$dtrace_out" 2>&1
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ]; then echo "RUN $i FAIL C dtrace_rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "RUN $i PASS C"; fi
           done
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
+          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
+          test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
 
   exp-c-main:
     runs-on: macos-26
@@ -64,38 +82,56 @@ jobs:
           echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
       - name: Install Go 1.27.3
         run: |
+          set -euo pipefail
           cd "$RUNNER_TEMP"
+          rm -f go1.27.3.darwin-arm64.tar.gz
           curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
           echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
           tar -xzf go1.27.3.darwin-arm64.tar.gz
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
           go version
-      - name: Clone dagu at main baseline
+      - name: Clone dagu at main baseline (canonical base repo, detached)
         run: |
+          set -euo pipefail
           cd "$RUNNER_TEMP"
           rm -rf dagu
           git clone https://github.com/dagucloud/dagu.git dagu
           cd dagu
-          git checkout "$EXPECTED_REV"
+          git checkout --detach "$EXPECTED_REV"
           ACTUAL=$(git rev-parse HEAD)
+          if [ ${#ACTUAL} -ne 40 ]; then echo "FAIL: not a full 40-character SHA: $ACTUAL"; exit 1; fi
           echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
           if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
           echo "SHA_ASSERT_OK: $ACTUAL"
-      - name: Run Mode C whole package -parallel=1 control (main baseline)
+      - name: Compile Dagu test binary (main baseline)
         run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
+      - name: DTrace-traced test execution (main baseline, N runs)
+        run: |
+          set -euo pipefail
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
           N=20
+          FAIL_COUNT=0
           for i in $(seq 1 $N); do
-            start=$(date +%s)
-            out="$RUNNER_TEMP/out_main_C_$i.txt"
-            if go test $PKG -parallel=1 -count=1 > "$out" 2>&1; then
-              end=$(date +%s)
-              echo "RUN $i PASS C duration=$((end-start))s"
-            else
-              end=$(date +%s)
-              echo "RUN $i FAIL C duration=$((end-start))s"
-            fi
+            dtrace_out="$RUNNER_TEMP/dtrace_main_C_$i.txt"
+            set +e
+            sudo dtrace -n '
+            syscall::openat:entry /execname == "dagu.test"/ { self->dirfd = arg0; self->path = copyinstr(arg1, 256); }
+            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::open:entry /execname == "dagu.test"/ { self->path = copyinstr(arg0, 256); }
+            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
+            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp); self->fd = 0; }
+            ' -c "sh -c '$RUNNER_TEMP/dagu.test -test.parallel=1'" > "$dtrace_out" 2>&1
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ]; then echo "RUN $i FAIL C dtrace_rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "RUN $i PASS C"; fi
           done
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
+          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
+          test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
