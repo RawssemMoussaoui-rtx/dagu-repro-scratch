@@ -30,6 +30,7 @@ jobs:
           echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
           tar -xzf go1.27.3.darwin-arm64.tar.gz
           echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go version
       - name: Clone dagu at PR head (canonical base repo, detached)
         run: |
@@ -66,11 +67,17 @@ jobs:
             set +e
             sudo dtrace -n '
             syscall::openat:entry /execname == "dagu.test"/ { self->dirfd = arg0; self->path = copyinstr(arg1, 256); }
-            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->dirfd, self->path, arg0, arg0, errno, timestamp); self->dirfd = 0; self->path = 0; }
             syscall::open:entry /execname == "dagu.test"/ { self->path = copyinstr(arg0, 256); }
-            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
-            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
-            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp); self->fd = 0; }
+            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->path, arg0, arg0, errno, timestamp); self->path = 0; }
+            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; }
+            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE pid=%d tid=%d fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, arg0, errno, timestamp); self->fd = 0; }
+            syscall::dup:entry /execname == "dagu.test"/ { self->fd = arg0; }
+            syscall::dup:return /execname == "dagu.test"/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, arg0, arg0, errno, timestamp); self->fd = 0; }
+            syscall::dup2:entry /execname == "dagu.test"/ { self->srcfd = arg0; self->dstfd = arg1; }
+            syscall::dup2:return /execname == "dagu.test"/ { printf("DUP2 pid=%d tid=%d srcfd=%d dstfd=%d newfd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->srcfd, self->dstfd, arg0, arg0, errno, timestamp); self->srcfd = 0; self->dstfd = 0; }
+            syscall::fcntl:entry /execname == "dagu.test"/ { self->fd = arg0; self->cmd = arg1; self->arg = arg2; }
+            syscall::fcntl:return /execname == "dagu.test"/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, self->cmd, self->arg, arg0, errno, timestamp); self->fd = 0; self->cmd = 0; self->arg = 0; }
             ' -c "sh -c '$RUNNER_TEMP/dagu.test'" > "$dtrace_out" 2>&1
             RC=$?
             set -e
@@ -97,6 +104,7 @@ jobs:
           echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
           tar -xzf go1.27.3.darwin-arm64.tar.gz
           echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
           go version
       - name: Clone dagu at main baseline (canonical base repo, detached)
         run: |
@@ -132,11 +140,17 @@ jobs:
             set +e
             sudo dtrace -n '
             syscall::openat:entry /execname == "dagu.test"/ { self->dirfd = arg0; self->path = copyinstr(arg1, 256); }
-            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
+            syscall::openat:return /execname == "dagu.test"/ { printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->dirfd, self->path, arg0, arg0, errno, timestamp); self->dirfd = 0; self->path = 0; }
             syscall::open:entry /execname == "dagu.test"/ { self->path = copyinstr(arg0, 256); }
-            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); self->path = 0; }
-            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
-            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp); self->fd = 0; }
+            syscall::open:return /execname == "dagu.test"/ { printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->path, arg0, arg0, errno, timestamp); self->path = 0; }
+            syscall::close:entry /execname == "dagu.test"/ { self->fd = arg0; }
+            syscall::close:return /execname == "dagu.test"/ { printf("CLOSE pid=%d tid=%d fd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, arg0, errno, timestamp); self->fd = 0; }
+            syscall::dup:entry /execname == "dagu.test"/ { self->fd = arg0; }
+            syscall::dup:return /execname == "dagu.test"/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, arg0, arg0, errno, timestamp); self->fd = 0; }
+            syscall::dup2:entry /execname == "dagu.test"/ { self->srcfd = arg0; self->dstfd = arg1; }
+            syscall::dup2:return /execname == "dagu.test"/ { printf("DUP2 pid=%d tid=%d srcfd=%d dstfd=%d newfd=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->srcfd, self->dstfd, arg0, arg0, errno, timestamp); self->srcfd = 0; self->dstfd = 0; }
+            syscall::fcntl:entry /execname == "dagu.test"/ { self->fd = arg0; self->cmd = arg1; self->arg = arg2; }
+            syscall::fcntl:return /execname == "dagu.test"/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d errno=%d ts=%llu\n", pid, tid, self->fd, self->cmd, self->arg, arg0, errno, timestamp); self->fd = 0; self->cmd = 0; self->arg = 0; }
             ' -c "sh -c '$RUNNER_TEMP/dagu.test'" > "$dtrace_out" 2>&1
             RC=$?
             set -e
