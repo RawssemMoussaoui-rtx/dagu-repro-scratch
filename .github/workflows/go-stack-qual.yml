@@ -30,12 +30,13 @@ jobs:
           package main
 
           import (
+            "errors"
             "fmt"
             "os"
             "syscall"
           )
 
-          func isEBADF(err error) bool { return err == syscall.EBADF }
+          func isEBADF(err error) bool { return errors.Is(err, syscall.EBADF) }
 
           func main() {
             // Case 1: Normal open + successful close. Expect close retval=0, no EBADF.
