@@ -147,35 +147,32 @@ jobs:
         run: |
           set -euo pipefail
           sudo dtrace -n '
-          syscall::openat:entry {
-            self->dirfd = arg0;
-            self->path = copyinstr(arg1, 256);
+          syscall::openat:entry { self->dirfd[tid] = arg0; self->path[tid] = copyinstr(arg1, 256); }
+          syscall::openat:return /self->path[tid] != 0/ {
+            self->is_basetmp[tid] = (index(self->path[tid], "base.yaml.tmp.") != 0);
+            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu\n", pid, tid, self->dirfd[tid], self->path[tid], arg0, arg0, self->is_basetmp[tid], timestamp);
+            self->path[tid] = 0; self->dirfd[tid] = 0; self->is_basetmp[tid] = 0;
           }
-          syscall::openat:return {
-            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d ts=%llu\n", pid, tid, self->dirfd, self->path, arg0, timestamp);
-            self->path = 0;
+          syscall::open:entry { self->path[tid] = copyinstr(arg0, 256); }
+          syscall::open:return /self->path[tid] != 0/ {
+            self->is_basetmp[tid] = (index(self->path[tid], "base.yaml.tmp.") != 0);
+            printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu\n", pid, tid, self->path[tid], arg0, arg0, self->is_basetmp[tid], timestamp);
+            self->path[tid] = 0; self->is_basetmp[tid] = 0;
           }
-          syscall::open:entry {
-            self->path = copyinstr(arg0, 256);
-          }
-          syscall::open:return {
-            printf("OPEN pid=%d tid=%d path=%s fd=%d ts=%llu\n", pid, tid, self->path, arg0, timestamp);
-            self->path = 0;
-          }
-          syscall::close:entry {
-            self->fd = arg0;
-            printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp);
-          }
-          syscall::close:return {
-            printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd, arg0, timestamp);
-            self->fd = 0;
-          }
+          syscall::dup:entry { self->srcfd[tid] = arg0; }
+          syscall::dup:return /self->srcfd[tid] != 0/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], arg0, arg0, timestamp); self->srcfd[tid] = 0; }
+          syscall::dup2:entry { self->srcfd[tid] = arg0; self->newfd[tid] = arg1; }
+          syscall::dup2:return /self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
+          syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->farg[tid] = arg2; }
+          syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; }
+          syscall::close:entry { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
+          syscall::close:return /self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
           ' -c "$RUNNER_TEMP/calib" > "$RUNNER_TEMP/dtrace_out.txt" 2>&1
           echo "DTRACE_RC=$?" >> $GITHUB_ENV
           echo "=== DTrace raw output ==="
           cat "$RUNNER_TEMP/dtrace_out.txt"
 
-      - name: Validate DTrace capture completeness
+- name: Validate DTrace capture completeness
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/dtrace_out.txt"
@@ -190,7 +187,20 @@ jobs:
           fi
           grep -qe "CLOSE_ENTRY" "$OUT" 2>/dev/null || { echo "FAIL: no close entry captured"; RC=1; }
           grep -qe "CLOSE_RETURN" "$OUT" 2>/dev/null || { echo "FAIL: no close return captured"; RC=1; }
-          if ! grep -qE "CLOSE_RETURN pid=[0-9][0-9]* tid=[0-9][0-9]* fd=[0-9][0-9]* retval=-1" "$OUT" 2>/dev/null; then
+          # Path-to-FD correlation: each open/openat return must show path and fd
+          if ! grep -qE "OPENAT.*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
+            echo "FAIL: path-to-FD correlation missing for openat"; RC=1
+          fi
+          if ! grep -qE "OPEN.*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
+            echo "FAIL: path-to-FD correlation missing for open"; RC=1
+          fi
+          # dup/fcntl probe coverage check (may be 0 if not exercised by calibration)
+          DUP_COUNT=$(grep -c "DUP " "$OUT" 2>/dev/null || echo 0)
+          DUP2_COUNT=$(grep -c "DUP2 " "$OUT" 2>/dev/null || echo 0)
+          FCNTL_COUNT=$(grep -c "FCNTL " "$OUT" 2>/dev/null || echo 0)
+          echo "DUP_COUNT=$DUP_COUNT DUP2_COUNT=$DUP2_COUNT FCNTL_COUNT=$FCNTL_COUNT" >> $GITHUB_ENV
+          # EBADF evidence: close return with retval=-1 for cases 2 and 3
+          if ! grep -qE "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1" "$OUT" 2>/dev/null; then
             echo "FAIL: no close return with retval=-1 (expected EBADF evidence for cases 2 and 3)"; RC=1
           fi
           if ! grep -qE "pid=[0-9]+ tid=[0-9]+" "$OUT" 2>/dev/null; then
@@ -203,7 +213,8 @@ jobs:
             exit 1
           fi
           echo "CLOSE_RETURN_COUNT=$(grep -c CLOSE_RETURN "$OUT" 2>/dev/null || echo 0)" >> $GITHUB_ENV
-          echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval on every event)"
+          echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval/path/fd-corr on every event)"
+          echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval/path/fd-corr on every event)"
           echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval on every event)"
 
       - name: Assert calibration expected vs actual outcomes
