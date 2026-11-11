@@ -172,7 +172,7 @@ jobs:
           echo "=== DTrace raw output ==="
           cat "$RUNNER_TEMP/dtrace_out.txt"
 
-- name: Validate DTrace capture completeness
+      - name: Validate DTrace capture completeness
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/dtrace_out.txt"
@@ -213,7 +213,6 @@ jobs:
             exit 1
           fi
           echo "CLOSE_RETURN_COUNT=$(grep -c CLOSE_RETURN "$OUT" 2>/dev/null || echo 0)" >> $GITHUB_ENV
-          echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval/path/fd-corr on every event)"
           echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval/path/fd-corr on every event)"
           echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval on every event)"
 
