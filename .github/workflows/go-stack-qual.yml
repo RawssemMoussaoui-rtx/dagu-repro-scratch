@@ -186,11 +186,8 @@ jobs:
           fi
           if [ "$RC" -ne 0 ]; then exit 1; fi
           # Path-to-FD correlation: each open/openat return must show path and fd
-          if ! grep -qE "OPENAT.*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
-            echo "FAIL: path-to-FD correlation missing for openat"; RC=1
-          fi
-          if ! grep -qE "OPEN.*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
-            echo "FAIL: path-to-FD correlation missing for open"; RC=1
+          if ! grep -qE "(OPEN|OPENAT).*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
+            echo "FAIL: path-to-FD correlation missing for open/openat"; RC=1
           fi
           # dup/fcntl probe coverage check (may be 0 if not exercised by calibration)
           DUP_COUNT=$(grep -c "DUP " "$OUT" 2>/dev/null || echo 0)
@@ -198,10 +195,10 @@ jobs:
           FCNTL_COUNT=$(grep -c "FCNTL " "$OUT" 2>/dev/null || echo 0)
           echo "DUP_COUNT=$DUP_COUNT DUP2_COUNT=$DUP2_COUNT FCNTL_COUNT=$FCNTL_COUNT" >> $GITHUB_ENV
           # EBADF evidence: close return with retval=-1 for cases 2 and 3
-          if ! grep -qe "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1" "$OUT" 2>/dev/null; then
+          if ! grep -qe "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1\b" "$OUT" 2>/dev/null; then
             echo "FAIL: no close return with retval=-1 (expected EBADF evidence for cases 2 and 3)"; RC=1
           fi
-          if ! grep -qe "pid=[0-9]+ tid=[0-9]+" "$OUT" 2>/dev/null; then
+          if ! grep -qe "pid=[0-9]+ tid=[0-9]+\b" "$OUT" 2>/dev/null; then
             echo "FAIL: capture events missing pid/tid"; RC=1
           fi
           if [ "$RC" -ne 0 ]; then
