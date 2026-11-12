@@ -128,6 +128,7 @@ jobs:
               cerr1 := f1.Close() // original now-invalid
               fmt.Printf("CASE3 open1_fd=%d raw_close1_ok=%v open2_fd=%d fd_reused=%v close2_ok=%v orig_close_ok=%v orig_close_ebadf=%v\n", fd1, rerr1 == nil, fd2, fd2 == fd1, cerr2 == nil, cerr1 == nil, isEBADF(cerr1))
             }
+          }
           EOF
 
       - name: Build calibration binary
