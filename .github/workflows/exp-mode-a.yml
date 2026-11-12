@@ -53,7 +53,7 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
-      - name: DTrace-traced test execution (PR head, N runs)
+      - name: DTrace-traced test execution (PR head, 5 runs, batch 1 of 1)
         if: ${{ inputs.execute_tests }}
         run: |
           set -euo pipefail
@@ -84,6 +84,8 @@ jobs:
             syscall::dup2:return /self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
             syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->farg[tid] = arg2; }
             syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; }
+            syscall::fcntl:entry /self->fd[tid] != 0 && self->cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
+            syscall::fcntl:return /self->fd[tid] != 0 && self->is_dupfd_cloexec[tid] == 1/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; self->is_dupfd_cloexec[tid] = 0; }
             syscall::close:entry { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
             syscall::close:return /self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
             ' -c "sh -c '$RUNNER_TEMP/dagu.test -test.run TestAPIKeys_DeleteNotFound'" > "$dtrace_out" 2>&1
@@ -94,6 +96,24 @@ jobs:
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
           echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
           test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
+      - name: Untraced control execution (PR head, 5 runs, batch 1 of 1)
+        if: ${{ inputs.execute_tests }}
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          PKG="./internal/service/frontend/api/v1"
+          N=5
+          FAIL_COUNT=0
+          for i in $(seq 1 $N); do
+            set +e
+            $RUNNER_TEMP/dagu.test -test.run TestAPIKeys_DeleteNotFound > "$RUNNER_TEMP/untraced_prhead_A_$i.txt" 2>&1
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ]; then echo "UNTRACED RUN $i FAIL A rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "UNTRACED RUN $i PASS A"; fi
+          done
+          echo "UNTRACED_COMPLETED=$N" >> $GITHUB_ENV
+          echo "UNTRACED_FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
 
   exp-a-main:
     runs-on: macos-26
@@ -134,7 +154,7 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
-      - name: DTrace-traced test execution (main baseline, N runs)
+      - name: DTrace-traced test execution (main baseline, 5 runs, batch 1 of 1)
         if: ${{ inputs.execute_tests }}
         run: |
           set -euo pipefail
@@ -165,6 +185,8 @@ jobs:
             syscall::dup2:return /self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
             syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->farg[tid] = arg2; }
             syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; }
+            syscall::fcntl:entry /self->fd[tid] != 0 && self->cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
+            syscall::fcntl:return /self->fd[tid] != 0 && self->is_dupfd_cloexec[tid] == 1/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; self->is_dupfd_cloexec[tid] = 0; }
             syscall::close:entry { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
             syscall::close:return /self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
             ' -c "sh -c '$RUNNER_TEMP/dagu.test -test.run TestAPIKeys_DeleteNotFound'" > "$dtrace_out" 2>&1
@@ -175,3 +197,21 @@ jobs:
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
           echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
           test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
+      - name: Untraced control execution (main baseline, 5 runs, batch 1 of 1)
+        if: ${{ inputs.execute_tests }}
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          cd "$RUNNER_TEMP/dagu"
+          PKG="./internal/service/frontend/api/v1"
+          N=5
+          FAIL_COUNT=0
+          for i in $(seq 1 $N); do
+            set +e
+            $RUNNER_TEMP/dagu.test -test.run TestAPIKeys_DeleteNotFound > "$RUNNER_TEMP/untraced_main_A_$i.txt" 2>&1
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ]; then echo "UNTRACED RUN $i FAIL A rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "UNTRACED RUN $i PASS A"; fi
+          done
+          echo "UNTRACED_COMPLETED=$N" >> $GITHUB_ENV
+          echo "UNTRACED_FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
