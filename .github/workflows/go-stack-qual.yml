@@ -341,9 +341,13 @@ jobs:
             echo "FAIL: path-to-FD correlation missing for open/openat"; RC=1
           fi
           # dup/fcntl probe coverage check
-          DUP_COUNT=$(grep -c "DUP " "$OUT" 2>/dev/null || echo 0)
-          DUP2_COUNT=$(grep -c "DUP2 " "$OUT" 2>/dev/null || echo 0)
-          FCNTL_COUNT=$(grep -c "FCNTL " "$OUT" 2>/dev/null || echo 0)
+          DUP_COUNT=$(grep -c "DUP " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          DUP2_COUNT=$(grep -c "DUP2 " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          FCNTL_COUNT=$(grep -c "FCNTL " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          # Ensure numeric values
+          DUP_COUNT=${DUP_COUNT:-0}
+          DUP2_COUNT=${DUP2_COUNT:-0}
+          FCNTL_COUNT=${FCNTL_COUNT:-0}
           echo "DUP_COUNT=$DUP_COUNT DUP2_COUNT=$DUP2_COUNT FCNTL_COUNT=$FCNTL_COUNT" >> $GITHUB_ENV
           # EBADF evidence: close return with retval=-1 for cases 2 and 3
           if ! grep -qE "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1\b" "$OUT" 2>/dev/null; then
@@ -358,7 +362,7 @@ jobs:
             echo "=== end diagnostic ==="
             exit 1
           fi
-          echo "CLOSE_RETURN_COUNT=$(grep -c CLOSE_RETURN "$OUT" 2>/dev/null || echo 0)" >> $GITHUB_ENV
+          echo "CLOSE_RETURN_COUNT=$(grep -c CLOSE_RETURN "$OUT" 2>/dev/null | tr -d '\n' || echo 0)" >> $GITHUB_ENV
           echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval/path/fd-corr on every event)"
           echo "QUAL_PASS: DTrace FD lifecycle capture complete (pid/tid/fd/ts/retval on every event)"
 
@@ -423,8 +427,10 @@ jobs:
           echo "Closed FDs: $CLOSE_FDS"
           
           # Verify EBADF correlation: DTrace retval=-1 matches calibration ebadf=true
-          EBADF_DTRACE=$(grep -c "CLOSE_RETURN.*retval=-1" "$OUT" 2>/dev/null || echo 0)
-          EBADF_CALIB=$(echo "$CALIB_OUT" | grep -c "ebadf=true" 2>/dev/null || echo 0)
+          EBADF_DTRACE=$(grep -c "CLOSE_RETURN.*retval=-1" "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          EBADF_CALIB=$(echo "$CALIB_OUT" | grep -c "ebadf=true" 2>/dev/null | tr -d '\n' || echo 0)
+          EBADF_DTRACE=${EBADF_DTRACE:-0}
+          EBADF_CALIB=${EBADF_CALIB:-0}
           echo "DTrace EBADF closes: $EBADF_DTRACE"
           echo "Calibration EBADF reports: $EBADF_CALIB"
           if [ "$EBADF_DTRACE" -ne "$EBADF_CALIB" ]; then
@@ -433,9 +439,15 @@ jobs:
           fi
           
           # Verify dup/dup2/fcntl events in DTrace
-          echo "DUP events: $(grep -c "DUP " "$OUT" 2>/dev/null || echo 0)"
-          echo "DUP2 events: $(grep -c "DUP2 " "$OUT" 2>/dev/null || echo 0)"
-          echo "FCNTL events: $(grep -c "FCNTL " "$OUT" 2>/dev/null || echo 0)"
+          DUP_EVT=$(grep -c "DUP " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          DUP2_EVT=$(grep -c "DUP2 " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          FCNTL_EVT=$(grep -c "FCNTL " "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
+          DUP_EVT=${DUP_EVT:-0}
+          DUP2_EVT=${DUP2_EVT:-0}
+          FCNTL_EVT=${FCNTL_EVT:-0}
+          echo "DUP events: $DUP_EVT"
+          echo "DUP2 events: $DUP2_EVT"
+          echo "FCNTL events: $FCNTL_EVT"
           
           if [ "$RC" -ne 0 ]; then exit 1; fi
           echo "CORRELATION_PASS: DTrace and calibration evidence fully correlated (PID, FD, EBADF, dup/fcntl)"
