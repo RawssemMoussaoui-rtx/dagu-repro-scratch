@@ -285,26 +285,26 @@ jobs:
         run: |
           set -euo pipefail
           sudo dtrace -n '
-          syscall::openat:entry { self->dirfd[tid] = arg0; self->path[tid] = copyinstr(arg1, 256); }
-          syscall::openat:return /self->path[tid] != 0/ {
+          syscall::openat:entry /pid == $target/ { self->dirfd[tid] = arg0; self->path[tid] = copyinstr(arg1, 256); }
+          syscall::openat:return /pid == $target && self->path[tid] != 0/ {
             self->is_basetmp[tid] = (index(self->path[tid], "calib-case") != 0);
             printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu\n", pid, tid, self->dirfd[tid], self->path[tid], arg0, arg0, self->is_basetmp[tid], timestamp);
             self->path[tid] = 0; self->dirfd[tid] = 0; self->is_basetmp[tid] = 0;
           }
-          syscall::open:entry { self->path[tid] = copyinstr(arg0, 256); }
-          syscall::open:return /self->path[tid] != 0/ {
+          syscall::open:entry /pid == $target/ { self->path[tid] = copyinstr(arg0, 256); }
+          syscall::open:return /pid == $target && self->path[tid] != 0/ {
             self->is_basetmp[tid] = (index(self->path[tid], "calib-case") != 0);
             printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu\n", pid, tid, self->path[tid], arg0, arg0, self->is_basetmp[tid], timestamp);
             self->path[tid] = 0; self->is_basetmp[tid] = 0;
           }
-          syscall::dup:entry { self->srcfd[tid] = arg0; }
-          syscall::dup:return /self->srcfd[tid] != 0/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], arg0, arg0, timestamp); self->srcfd[tid] = 0; }
-          syscall::dup2:entry { self->srcfd[tid] = arg0; self->newfd[tid] = arg1; }
-          syscall::dup2:return /self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
-          syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->arg[tid] = arg2; }
-          syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d arg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->arg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->arg[tid] = 0; }
-          syscall::close:entry { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
-          syscall::close:return /self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
+          syscall::dup:entry /pid == $target/ { self->srcfd[tid] = arg0; }
+          syscall::dup:return /pid == $target && self->srcfd[tid] != 0/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], arg0, arg0, timestamp); self->srcfd[tid] = 0; }
+          syscall::dup2:entry /pid == $target/ { self->srcfd[tid] = arg0; self->newfd[tid] = arg1; }
+          syscall::dup2:return /pid == $target && self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
+          syscall::fcntl:entry /pid == $target/ { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->arg[tid] = arg2; }
+          syscall::fcntl:return /pid == $target && self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d arg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->arg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->arg[tid] = 0; }
+          syscall::close:entry /pid == $target/ { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
+          syscall::close:return /pid == $target && self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
           ' -c "$RUNNER_TEMP/calib" > "$RUNNER_TEMP/dtrace_out.txt" 2>&1
           echo "DTRACE_RC=$?" >> $GITHUB_ENV
           echo "=== DTrace raw output ==="
