@@ -428,11 +428,12 @@ jobs:
           
           # Verify EBADF correlation: DTrace retval=-1 matches calibration ebadf=true
           EBADF_DTRACE=$(grep -c "CLOSE_RETURN.*retval=-1" "$OUT" 2>/dev/null | tr -d '\n' || echo 0)
-          EBADF_CALIB=$(echo "$CALIB_OUT" | grep -c "ebadf=true" 2>/dev/null | tr -d '\n' || echo 0)
           EBADF_DTRACE=${EBADF_DTRACE:-0}
+          # Count calibration EBADF for cases 2 and 3 only (expected EBADF cases)
+          EBADF_CALIB=$(echo "$CALIB_OUT" | grep -cE "CASE(2|3)_EBADF.*ebadf=true" 2>/dev/null | tr -d '\n' || echo 0)
           EBADF_CALIB=${EBADF_CALIB:-0}
           echo "DTrace EBADF closes: $EBADF_DTRACE"
-          echo "Calibration EBADF reports: $EBADF_CALIB"
+          echo "Calibration EBADF reports (cases 2&3): $EBADF_CALIB"
           if [ "$EBADF_DTRACE" -ne "$EBADF_CALIB" ]; then
             echo "FAIL: EBADF count mismatch between DTrace ($EBADF_DTRACE) and calibration ($EBADF_CALIB)"
             RC=1
