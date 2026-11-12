@@ -46,7 +46,6 @@ jobs:
           func isEBADF(err error) bool { return errors.Is(err, syscall.EBADF) }
 
           func getTID() uint64 {
-            var tid uint64
             runtime.GOMAXPROCS(1)
             // On Darwin, gettid is not directly exposed; use syscall.Syscall
             // Fallback to a unique identifier per goroutine
@@ -175,13 +174,17 @@ jobs:
               }
               defer os.Remove(f.Name())
               fd := f.Fd()
-              newfd, err := syscall.Dup(int(fd))
-              if err != nil {
+              // Use raw syscall for consistency
+              // SYS_DUP = 41 on Darwin
+              const SYS_DUP = 41
+              newfd, _, errno := syscall.Syscall(SYS_DUP, fd, 0, 0)
+              if errno != 0 {
+                err := syscall.Errno(errno)
                 printEBADF(4, fd, err, "dup")
                 fmt.Printf("CASE4_DUP_ERR srcfd=%d err=%v\n", fd, err)
               } else {
                 printCaseMarker(4, fmt.Sprintf("DUP srcfd=%d newfd=%d", fd, newfd))
-                syscall.Close(newfd)
+                syscall.Close(int(newfd))
               }
               if err := f.Close(); err != nil {
                 printEBADF(4, fd, err, "close_orig")
@@ -200,13 +203,17 @@ jobs:
               fd := f.Fd()
               // Try to dup2 to fd+10 (or some available number)
               targetFd := int(fd) + 10
-              newfd, err := syscall.Dup2(int(fd), targetFd)
-              if err != nil {
+              // Use raw syscall for consistency across platforms
+              // SYS_DUP2 = 90 on Darwin
+              const SYS_DUP2 = 90
+              newfd, _, errno := syscall.Syscall(SYS_DUP2, fd, uintptr(targetFd), 0)
+              if errno != 0 {
+                err := syscall.Errno(errno)
                 printEBADF(5, fd, err, "dup2")
                 fmt.Printf("CASE5_DUP2_ERR srcfd=%d targetfd=%d err=%v\n", fd, targetFd, err)
               } else {
                 printCaseMarker(5, fmt.Sprintf("DUP2 srcfd=%d newfd=%d targetfd=%d", fd, newfd, targetFd))
-                syscall.Close(newfd)
+                syscall.Close(int(newfd))
               }
               if err := f.Close(); err != nil {
                 printEBADF(5, fd, err, "close_orig")
