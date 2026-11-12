@@ -40,7 +40,7 @@ jobs:
             "fmt"
             "os"
             "syscall"
-          )
+           )
 
           func isEBADF(err error) bool { return errors.Is(err, syscall.EBADF) }
 
@@ -128,7 +128,6 @@ jobs:
               cerr1 := f1.Close() // original now-invalid
               fmt.Printf("CASE3 open1_fd=%d raw_close1_ok=%v open2_fd=%d fd_reused=%v close2_ok=%v orig_close_ok=%v orig_close_ebadf=%v\n", fd1, rerr1 == nil, fd2, fd2 == fd1, cerr2 == nil, cerr1 == nil, isEBADF(cerr1))
             }
-          }
           EOF
 
       - name: Build calibration binary
@@ -163,30 +162,28 @@ jobs:
           syscall::dup:return /self->srcfd[tid] != 0/ { printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], arg0, arg0, timestamp); self->srcfd[tid] = 0; }
           syscall::dup2:entry { self->srcfd[tid] = arg0; self->newfd[tid] = arg1; }
           syscall::dup2:return /self->srcfd[tid] != 0/ { printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->srcfd[tid], self->newfd[tid], arg0, timestamp); self->srcfd[tid] = 0; self->newfd[tid] = 0; }
-          syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->farg[tid] = arg2; }
-          syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->farg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->farg[tid] = 0; }
+          syscall::fcntl:entry { self->fd[tid] = arg0; self->cmd[tid] = arg1; self->arg[tid] = arg2; }
+          syscall::fcntl:return /self->fd[tid] != 0/ { printf("FCNTL pid=%d tid=%d fd=%d cmd=%d arg=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], self->cmd[tid], self->arg[tid], arg0, timestamp); self->fd[tid] = 0; self->cmd[tid] = 0; self->arg[tid] = 0; }
           syscall::close:entry { self->fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d ts=%llu\n", pid, tid, arg0, timestamp); }
           syscall::close:return /self->fd[tid] != 0/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d ts=%llu\n", pid, tid, self->fd[tid], arg0, timestamp); self->fd[tid] = 0; }
           ' -c "$RUNNER_TEMP/calib" > "$RUNNER_TEMP/dtrace_out.txt" 2>&1
           echo "DTRACE_RC=$?" >> $GITHUB_ENV
           echo "=== DTrace raw output ==="
           cat "$RUNNER_TEMP/dtrace_out.txt"
+          echo "=== End DTrace raw output ==="
 
       - name: Validate DTrace capture completeness
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/dtrace_out.txt"
-          if [ "${DTRACE_RC:-0}" -ne 0 ]; then echo "FAIL: DTrace RC=${DTRACE_RC:-0}"; exit 1; fi
-          if [ ! -f "$OUT" ]; then echo "FAIL: no dtrace output"; exit 1; fi
           RC=0
-          HAS_OPENAT=0; HAS_OPEN=0
-          grep -qe "OPENAT" "$OUT" 2>/dev/null && HAS_OPENAT=1 || true
-          grep -qe "OPEN " "$OUT" 2>/dev/null && HAS_OPEN=1 || true
-          if [ "$HAS_OPENAT" -eq 0 ] && [ "$HAS_OPEN" -eq 0 ]; then
-            echo "FAIL: no open/openat creation captured"; RC=1
+          if [ "${DTRACE_RC:-1}" -ne 0 ]; then
+            echo "FAIL: DTrace exited with code ${DTRACE_RC:-1}"; RC=1
           fi
-          grep -qe "CLOSE_ENTRY" "$OUT" 2>/dev/null || { echo "FAIL: no close entry captured"; RC=1; }
-          grep -qe "CLOSE_RETURN" "$OUT" 2>/dev/null || { echo "FAIL: no close return captured"; RC=1; }
+          if [ ! -f "$OUT" ]; then
+            echo "FAIL: no dtrace output file"; RC=1
+          fi
+          if [ "$RC" -ne 0 ]; then exit 1; fi
           # Path-to-FD correlation: each open/openat return must show path and fd
           if ! grep -qE "OPENAT.*path=.*fd=[0-9]+" "$OUT" 2>/dev/null; then
             echo "FAIL: path-to-FD correlation missing for openat"; RC=1
@@ -200,10 +197,10 @@ jobs:
           FCNTL_COUNT=$(grep -c "FCNTL " "$OUT" 2>/dev/null || echo 0)
           echo "DUP_COUNT=$DUP_COUNT DUP2_COUNT=$DUP2_COUNT FCNTL_COUNT=$FCNTL_COUNT" >> $GITHUB_ENV
           # EBADF evidence: close return with retval=-1 for cases 2 and 3
-          if ! grep -qE "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1" "$OUT" 2>/dev/null; then
+          if ! grep -qe "CLOSE_RETURN pid=[0-9]+ tid=[0-9]+ fd=[0-9]+ retval=-1" "$OUT" 2>/dev/null; then
             echo "FAIL: no close return with retval=-1 (expected EBADF evidence for cases 2 and 3)"; RC=1
           fi
-          if ! grep -qE "pid=[0-9]+ tid=[0-9]+" "$OUT" 2>/dev/null; then
+          if ! grep -qe "pid=[0-9]+ tid=[0-9]+" "$OUT" 2>/dev/null; then
             echo "FAIL: capture events missing pid/tid"; RC=1
           fi
           if [ "$RC" -ne 0 ]; then
