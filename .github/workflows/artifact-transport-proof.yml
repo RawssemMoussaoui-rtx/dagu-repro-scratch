@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload synthetic evidence artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e927750fbaf5677b5c
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: synthetic-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.create_evidence.outputs.EVIDENCE_DIR }}/*
