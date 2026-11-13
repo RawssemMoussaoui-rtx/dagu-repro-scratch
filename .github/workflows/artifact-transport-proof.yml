@@ -1,0 +1,149 @@
+name: Artifact Transport Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  artifact-transport-proof:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify and install Go 1.27.3
+        run: |
+          set -euo pipefail
+          GO_VERSION="1.27.3"
+          GO_ARCH="darwin-arm64"
+          GO_TARBALL="go${GO_VERSION}.${GO_ARCH}.tar.gz"
+          GO_URL="https://go.dev/dl/${GO_TARBALL}"
+          EXPECTED_SHA256="dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2"
+          GO_INSTALL_DIR="${RUNNER_TEMP}/go"
+
+          echo "Downloading Go ${GO_VERSION} for ${GO_ARCH}..."
+          curl -fsSL -o "${RUNNER_TEMP}/${GO_TARBALL}" "${GO_URL}"
+
+          echo "Verifying SHA256..."
+          ACTUAL_SHA256=$(shasum -a 256 "${RUNNER_TEMP}/${GO_TARBALL}" | awk '{print $1}')
+          if [[ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+            echo "SHA256 mismatch! Expected: ${EXPECTED_SHA256}, Got: ${ACTUAL_SHA256}"
+            exit 1
+          fi
+          echo "SHA256 verified: ${ACTUAL_SHA256}"
+
+          echo "Installing Go to ${GO_INSTALL_DIR}..."
+          rm -rf "${GO_INSTALL_DIR}"
+          tar -xzf "${RUNNER_TEMP}/${GO_TARBALL}" -C "${RUNNER_TEMP}"
+          export PATH="${GO_INSTALL_DIR}/bin:${PATH}"
+          echo "PATH=${GO_INSTALL_DIR}/bin:${PATH}" >> $GITHUB_ENV
+
+          echo "Go version:"
+          go version
+
+      - name: Create synthetic evidence
+        id: create_evidence
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ github.run_id }}"
+          RUN_ATTEMPT="${{ github.run_attempt }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          SHA="${{ github.sha }}"
+          WORKFLOW="${{ github.workflow }}"
+
+          EVIDENCE_DIR="${RUNNER_TEMP}/evidence-${RUN_ID}-${RUN_ATTEMPT}-$(date -u +%Y%m%d-%H%M%S)"
+          mkdir -p "${EVIDENCE_DIR}"
+
+          # Create run-metadata.json
+          cat > "${EVIDENCE_DIR}/run-metadata.json" <<EOF
+{
+  "run_id": "${RUN_ID}",
+  "run_attempt": "${RUN_ATTEMPT}",
+  "timestamp": "${TIMESTAMP}",
+  "sha": "${SHA}",
+  "workflow": "${WORKFLOW}",
+  "runner_os": "macOS",
+  "runner_arch": "arm64",
+  "go_version": "1.27.3"
+}
+EOF
+
+          # Create synthetic-dtrace.log
+          cat > "${EVIDENCE_DIR}/synthetic-dtrace.log" <<'DTEOF'
+dtrace: script 'syscall:::entry' matched 452 probes
+CPU     ID                    FUNCTION:NAME
+  0  12345                      open:entry /tmp/test.txt
+  0  12346                     read:entry 0x3
+  0  12347                    write:entry 0x3
+  0  12348                     close:entry 0x3
+  1  12349                      open:entry /tmp/another.txt
+  1  12350                     read:entry 0x4
+  1  12351                    write:entry 0x4
+  1  12352                     close:entry 0x4
+dtrace: script 'syscall:::return' matched 452 probes
+CPU     ID                    FUNCTION:NAME
+  0  12353                      open:return 0x3
+  0  12354                     read:return 1024
+  0  12355                    write:return 512
+  0  12356                     close:return 0
+  1  12357                      open:return 0x4
+  1  12358                     read:return 2048
+  1  12359                    write:return 1024
+  1  12360                     close:return 0
+DTEOF
+
+          # Create synthetic-test-output.log
+          cat > "${EVIDENCE_DIR}/synthetic-test-output.log" <<'TEOF'
+=== RUN   TestAPIKeys_DeleteNotFound
+--- FAIL: TestAPIKeys_DeleteNotFound (0.01s)
+    filebaseconfig: failed to create default base config
+    close .../base.yaml.tmp.abc123: bad file descriptor
+FAIL
+exit status 1
+FAIL    github.com/dagu/dagu  0.012s
+TEOF
+
+          # Create SHA256SUMS
+          cd "${EVIDENCE_DIR}"
+          shasum -a 256 * > SHA256SUMS
+
+          echo "EVIDENCE_DIR=${EVIDENCE_DIR}" >> $GITHUB_OUTPUT
+          echo "Evidence created at ${EVIDENCE_DIR}"
+          ls -la "${EVIDENCE_DIR}"
+          cat "${EVIDENCE_DIR}/SHA256SUMS"
+
+      - name: Validate evidence files
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="${{ steps.create_evidence.outputs.EVIDENCE_DIR }}"
+          
+          echo "Validating evidence files..."
+          
+          # Check all expected files exist and are non-empty
+          for f in run-metadata.json synthetic-dtrace.log synthetic-test-output.log SHA256SUMS; do
+            if [[ ! -f "${EVIDENCE_DIR}/${f}" ]]; then
+              echo "Missing file: ${f}"
+              exit 1
+            fi
+            if [[ ! -s "${EVIDENCE_DIR}/${f}" ]]; then
+              echo "Empty file: ${f}"
+              exit 1
+            fi
+            echo "OK: ${f} ($(wc -c < "${EVIDENCE_DIR}/${f}") bytes)"
+          done
+          
+          # Verify SHA256SUMS
+          cd "${EVIDENCE_DIR}"
+          shasum -a 256 -c SHA256SUMS
+          echo "All checksums verified."
+
+      - name: Upload synthetic evidence artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e927750fbaf5677b5c
+        with:
+          name: synthetic-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.create_evidence.outputs.EVIDENCE_DIR }}/*
+          retention-days: 7
