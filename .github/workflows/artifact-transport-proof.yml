@@ -1,6 +1,6 @@
 name: Artifact Transport Proof
 
-on:
+'on':
   workflow_dispatch:
 
 permissions:
@@ -57,54 +57,16 @@ jobs:
           EVIDENCE_DIR="${RUNNER_TEMP}/evidence-${RUN_ID}-${RUN_ATTEMPT}-$(date -u +%Y%m%d-%H%M%S)"
           mkdir -p "${EVIDENCE_DIR}"
 
-          # Create run-metadata.json
-          cat > "${EVIDENCE_DIR}/run-metadata.json" <<EOF
-{
-  "run_id": "${RUN_ID}",
-  "run_attempt": "${RUN_ATTEMPT}",
-  "timestamp": "${TIMESTAMP}",
-  "sha": "${SHA}",
-  "workflow": "${WORKFLOW}",
-  "runner_os": "macOS",
-  "runner_arch": "arm64",
-  "go_version": "1.27.3"
-}
-EOF
+          # Create run-metadata.json using printf
+          printf '{"run_id":"%s","run_attempt":"%s","timestamp":"%s","sha":"%s","workflow":"%s","runner_os":"macOS","runner_arch":"arm64","go_version":"1.27.3"}\n' \
+            "${RUN_ID}" "${RUN_ATTEMPT}" "${TIMESTAMP}" "${SHA}" "${WORKFLOW}" \
+            > "${EVIDENCE_DIR}/run-metadata.json"
 
-          # Create synthetic-dtrace.log
-          cat > "${EVIDENCE_DIR}/synthetic-dtrace.log" <<'DTEOF'
-dtrace: script 'syscall:::entry' matched 452 probes
-CPU     ID                    FUNCTION:NAME
-  0  12345                      open:entry /tmp/test.txt
-  0  12346                     read:entry 0x3
-  0  12347                    write:entry 0x3
-  0  12348                     close:entry 0x3
-  1  12349                      open:entry /tmp/another.txt
-  1  12350                     read:entry 0x4
-  1  12351                    write:entry 0x4
-  1  12352                     close:entry 0x4
-dtrace: script 'syscall:::return' matched 452 probes
-CPU     ID                    FUNCTION:NAME
-  0  12353                      open:return 0x3
-  0  12354                     read:return 1024
-  0  12355                    write:return 512
-  0  12356                     close:return 0
-  1  12357                      open:return 0x4
-  1  12358                     read:return 2048
-  1  12359                    write:return 1024
-  1  12360                     close:return 0
-DTEOF
+          # Create synthetic-dtrace.log using printf
+          printf "dtrace: script 'syscall:::entry' matched 452 probes\nCPU     ID                    FUNCTION:NAME\n  0  12345                      open:entry /tmp/test.txt\n  0  12346                     read:entry 0x3\n  0  12347                    write:entry 0x3\n  0  12348                     close:entry 0x3\n  1  12349                      open:entry /tmp/another.txt\n  1  12350                     read:entry 0x4\n  1  12351                    write:entry 0x4\n  1  12352                     close:entry 0x4\ndtrace: script 'syscall:::return' matched 452 probes\nCPU     ID                    FUNCTION:NAME\n  0  12353                      open:return 0x3\n  0  12354                     read:return 1024\n  0  12355                    write:return 512\n  0  12356                     close:return 0\n  1  12357                      open:return 0x4\n  1  12358                     read:return 2048\n  1  12359                    write:return 1024\n  1  12360                     close:return 0\n" > "${EVIDENCE_DIR}/synthetic-dtrace.log"
 
-          # Create synthetic-test-output.log
-          cat > "${EVIDENCE_DIR}/synthetic-test-output.log" <<'TEOF'
-=== RUN   TestAPIKeys_DeleteNotFound
---- FAIL: TestAPIKeys_DeleteNotFound (0.01s)
-    filebaseconfig: failed to create default base config
-    close .../base.yaml.tmp.abc123: bad file descriptor
-FAIL
-exit status 1
-FAIL    github.com/dagu/dagu  0.012s
-TEOF
+          # Create synthetic-test-output.log using printf
+          printf "=== RUN   TestAPIKeys_DeleteNotFound\n--- FAIL: TestAPIKeys_DeleteNotFound (0.01s)\n    filebaseconfig: failed to create default base config\n    close .../base.yaml.tmp.abc123: bad file descriptor\nFAIL\nexit status 1\nFAIL    github.com/dagu/dagu  0.012s\n" > "${EVIDENCE_DIR}/synthetic-test-output.log"
 
           # Create SHA256SUMS
           cd "${EVIDENCE_DIR}"
