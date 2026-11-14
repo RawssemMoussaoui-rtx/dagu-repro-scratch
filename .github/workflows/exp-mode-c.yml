@@ -122,11 +122,11 @@ jobs:
           FAIL_COUNT=0
           for i in $(seq 1 $N); do
             set +e
-            $RUNNER_TEMP/dagu.test -test.parallel=1 > "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" 2>&1
+            $RUNNER_TEMP/dagu.test > "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" 2>&1
             RC=$?
             echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename $RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt .txt)" > "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
             echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test -test.parallel=1" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
+            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
             echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
             echo "output=$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_C_b1_$i.txt" .txt).txt"
             set -e
@@ -287,11 +287,11 @@ jobs:
           FAIL_COUNT=0
           for i in $(seq 1 $N); do
             set +e
-            $RUNNER_TEMP/dagu.test -test.parallel=1 > "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" 2>&1
+            $RUNNER_TEMP/dagu.test > "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" 2>&1
             RC=$?
             echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename $RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt .txt)" > "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
             echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test -test.parallel=1" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
+            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
             echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
             echo "output=$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_C_b1_$i.txt" .txt).txt"
             set -e

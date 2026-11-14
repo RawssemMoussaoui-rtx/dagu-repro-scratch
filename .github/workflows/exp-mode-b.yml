@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
           cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          ﻿/*
+          /*
            * Shared DTrace helper for FD state tracking in one target process.
            * Run with: dtrace -q -s dtrace/trace.d -p <pid>
            */
@@ -321,7 +321,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
           cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          ﻿/*
+          /*
            * Shared DTrace helper for FD state tracking in one target process.
            * Run with: dtrace -q -s dtrace/trace.d -p <pid>
            */

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Shared DTrace helper for FD state tracking in one target process.
  * Run with: dtrace -q -s dtrace/trace.d -p <pid>
  */
