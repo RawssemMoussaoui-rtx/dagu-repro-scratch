@@ -1,0 +1,9 @@
+{
+  "run_id": "synthetic-run-001",
+  "workflow": "fd-calibration",
+  "status": "success",
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:00:01Z",
+  "host": "synthetic-host",
+  "pid": 4242
+}

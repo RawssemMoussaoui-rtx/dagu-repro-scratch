@@ -1,0 +1,11 @@
+target=4242 event=open fd=3 gen=4 valid=1 path=/tmp/alpha
+target=4242 event=openat dirfd=-100 fd=4 gen=5 valid=1 path=/tmp/beta
+target=4242 event=close fd=3 gen=4 valid=0
+target=4242 event=open fd=3 gen=6 valid=1 path=/tmp/gamma
+target=4242 event=dup oldfd=3 newfd=5 gen=7 valid=1
+target=4242 event=dup2 oldfd=5 newfd=7 gen=8 valid=1
+target=4242 event=fcntl cmd=0 fd=3 newfd=6 gen=9 valid=1
+target=4242 event=fcntl cmd=1030 fd=3 newfd=8 gen=10 valid=1
+target=4242 event=dup2 oldfd=3 newfd=4 gen=11 valid=1
+target=4242 event=close fd=0 gen=1 valid=0
+target=4242 event=open fd=0 gen=12 valid=1 path=/tmp/stdin-replacement

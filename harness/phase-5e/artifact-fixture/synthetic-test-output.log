@@ -1,0 +1,14 @@
+state initial: 0:v1g1 1:v1g2 2:v1g3 3:v0 4:v0 5:v0 6:v0 7:v0 8:v0 9:v0 10:v0 11:v0 12:v0 13:v0 14:v0 15:v0
+open /tmp/alpha -> fd=3 gen=4
+openat AT_FDCWD /tmp/beta -> fd=4 gen=5
+open "" -> fd=-1
+close 3 -> 0
+open /tmp/gamma -> fd=3 gen=6 (reuse)
+dup 3 -> fd=5 gen=7
+dup2 5 7 -> fd=7 gen=8
+fcntl F_DUPFD 3 arg=4 -> fd=6 gen=9
+fcntl F_DUPFD_CLOEXEC 3 arg=6 -> fd=8 gen=10
+dup2 3 4 -> fd=4 gen=11 (implicit close)
+close 0 -> 0
+open /tmp/stdin-replacement -> fd=0 gen=12 (fd 0 reuse)
+state final: 0:v1g12 1:v1g2 2:v1g3 3:v1g6 4:v1g11 5:v1g7 6:v1g9 7:v1g8 8:v1g10 9:v0 10:v0 11:v0 12:v0 13:v0 14:v0 15:v0
