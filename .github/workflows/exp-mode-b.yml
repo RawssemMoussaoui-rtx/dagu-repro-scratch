@@ -56,46 +56,127 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
           cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          syscall::openat:entry /pid == $target/ { self->oat_has_dirfd[tid] = 1; self->oat_dirfd[tid] = arg0; self->oat_has_path[tid] = 1; self->oat_path[tid] = copyinstr(arg1, 256); }
-          syscall::openat:return /pid == $target && self->oat_has_path[tid]/ {
-            self->oat_ok[tid] = (arg0 >= 0);
-            self->oat_is_basetmp[tid] = (index(self->oat_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->oat_dirfd[tid], self->oat_path[tid], arg0, arg0, self->oat_is_basetmp[tid], timestamp, (self->oat_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->oat_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->oat_has_path[tid] = 0; self->oat_has_dirfd[tid] = 0; self->oat_is_basetmp[tid] = 0; self->oat_ok[tid] = 0;
+          ﻿/*
+           * Shared DTrace helper for FD state tracking in one target process.
+           * Run with: dtrace -q -s dtrace/trace.d -p <pid>
+           */
+          #pragma D option quiet
+          
+          BEGIN
+          {
+              /* Descriptors 0-2 are assumed open when tracing starts. */
+              fd_valid[0] = 1;
+              fd_valid[1] = 1;
+              fd_valid[2] = 1;
+              fd_gen[0] = 1;
+              fd_gen[1] = 2;
+              fd_gen[2] = 3;
+              gen_seq = 3;
           }
-          syscall::open:entry /pid == $target/ { self->open_has_path[tid] = 1; self->open_path[tid] = copyinstr(arg0, 256); }
-          syscall::open:return /pid == $target && self->open_has_path[tid]/ {
-            self->open_ok[tid] = (arg0 >= 0);
-            self->open_is_basetmp[tid] = (index(self->open_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->open_path[tid], arg0, arg0, self->open_is_basetmp[tid], timestamp, (self->open_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->open_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->open_has_path[tid] = 0; self->open_is_basetmp[tid] = 0; self->open_ok[tid] = 0;
+          
+          syscall::open:entry
+          /pid == $target && $target > 0/
+          {
+              self->open_path = copyinstr(arg0);
           }
-          syscall::dup:entry /pid == $target/ { self->dup_has_src[tid] = 1; self->dup_src[tid] = arg0; }
-          syscall::dup:return /pid == $target && self->dup_has_src[tid]/ {
-            self->dup_ok[tid] = (arg0 >= 0);
-            printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu srcgen=%d newgen=%d\n", pid, tid, self->dup_src[tid], arg0, arg0, timestamp, (has_gen[self->dup_src[tid]] ? gen[self->dup_src[tid]] : 0), (self->dup_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->dup_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->dup_has_src[tid] = 0; self->dup_ok[tid] = 0;
+          
+          syscall::open:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->fd = (int)arg0;
+              fd_valid[this->fd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->fd] = gen_seq;
+              printf("target=%d event=open fd=%d gen=%d valid=1 path=%s\n",
+                  $target, this->fd, fd_gen[this->fd], self->open_path);
           }
-          syscall::dup2:entry /pid == $target/ { self->dup2_has_src[tid] = 1; self->dup2_src[tid] = arg0; self->dup2_has_new[tid] = 1; self->dup2_new[tid] = arg1; }
-          syscall::dup2:return /pid == $target && self->dup2_has_src[tid]/ {
-            self->dup2_ok[tid] = (arg0 >= 0);
-            printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->dup2_src[tid], self->dup2_new[tid], arg0, timestamp);
-            if (self->dup2_ok[tid]) { gen[self->dup2_new[tid]]++; has_gen[self->dup2_new[tid]] = 1; }
-            self->dup2_has_src[tid] = 0; self->dup2_has_new[tid] = 0; self->dup2_ok[tid] = 0;
+          
+          syscall::openat:entry
+          /pid == $target && $target > 0/
+          {
+              self->openat_dirfd = arg0;
+              self->openat_path = copyinstr(arg1);
           }
-          syscall::fcntl:entry /pid == $target/ { self->fcn_has_fd[tid] = 1; self->fcn_fd[tid] = arg0; self->fcn_has_cmd[tid] = 1; self->fcn_cmd[tid] = arg1; self->fcn_has_arg[tid] = 1; self->fcn_arg[tid] = arg2; }
-          syscall::fcntl:return /pid == $target && self->fcn_has_fd[tid]/ {
-            self->fcn_ok[tid] = (arg0 >= 0);
-            printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu gen=%d\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp, (has_gen[self->fcn_fd[tid]] ? gen[self->fcn_fd[tid]] : 0));
-            self->fcn_has_fd[tid] = 0; self->fcn_has_cmd[tid] = 0; self->fcn_has_arg[tid] = 0; self->fcn_ok[tid] = 0;
+          
+          syscall::openat:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->fd = (int)arg0;
+              fd_valid[this->fd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->fd] = gen_seq;
+              printf("target=%d event=openat dirfd=%d fd=%d gen=%d valid=1 path=%s\n",
+                  $target, self->openat_dirfd, this->fd, fd_gen[this->fd], self->openat_path);
           }
-          syscall::fcntl:entry /pid == $target && self->fcn_has_fd[tid] && self->fcn_cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
-          syscall::fcntl:return /pid == $target && self->is_dupfd_cloexec[tid]/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp); if (arg0 >= 0) { gen[arg0]++; has_gen[arg0] = 1; } self->is_dupfd_cloexec[tid] = 0; }
-          syscall::close:entry /pid == $target/ { self->close_has_fd[tid] = 1; self->close_fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d gen=%d ts=%llu\n", pid, tid, arg0, (has_gen[arg0] ? gen[arg0] : 0), timestamp); }
-          syscall::close:return /pid == $target && self->close_has_fd[tid]/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d gen=%d ts=%llu\n", pid, tid, self->close_fd[tid], arg0, (has_gen[self->close_fd[tid]] ? gen[self->close_fd[tid]] : 0), timestamp); self->close_has_fd[tid] = 0; }
+          
+          syscall::close:entry
+          /pid == $target && $target > 0/
+          {
+              self->close_fd = arg0;
+          }
+          
+          syscall::close:return
+          /pid == $target && $target > 0 && arg0 == 0/
+          {
+              fd_valid[self->close_fd] = 0;
+              printf("target=%d event=close fd=%d gen=%d valid=0\n",
+                  $target, self->close_fd, fd_gen[self->close_fd]);
+          }
+          
+          syscall::dup:entry
+          /pid == $target && $target > 0/
+          {
+              self->dup_oldfd = arg0;
+          }
+          
+          syscall::dup:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->newfd = (int)arg0;
+              fd_valid[this->newfd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->newfd] = gen_seq;
+              printf("target=%d event=dup oldfd=%d newfd=%d gen=%d valid=1\n",
+                  $target, self->dup_oldfd, this->newfd, fd_gen[this->newfd]);
+          }
+          
+          syscall::dup2:entry
+          /pid == $target && $target > 0/
+          {
+              self->dup2_oldfd = arg0;
+              self->dup2_newfd = arg1;
+          }
+          
+          syscall::dup2:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              fd_valid[self->dup2_newfd] = fd_valid[self->dup2_oldfd];
+              gen_seq = gen_seq + 1;
+              fd_gen[self->dup2_newfd] = gen_seq;
+              printf("target=%d event=dup2 oldfd=%d newfd=%d gen=%d valid=%d\n",
+                  $target, self->dup2_oldfd, self->dup2_newfd,
+                  fd_gen[self->dup2_newfd], fd_valid[self->dup2_newfd]);
+          }
+          
+          syscall::fcntl:entry
+          /pid == $target && $target > 0/
+          {
+              self->fcntl_fd = arg0;
+              self->fcntl_cmd = arg1;
+              self->fcntl_arg = arg2;
+          }
+          
+          syscall::fcntl:return
+          /pid == $target && $target > 0 && arg0 >= 0 &&
+              (self->fcntl_cmd == 0 || self->fcntl_cmd == 1030)/
+          {
+              this->newfd = (int)arg0;
+              fd_valid[this->newfd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->newfd] = gen_seq;
+              printf("target=%d event=fcntl cmd=%d fd=%d newfd=%d gen=%d valid=1\n",
+                  $target, self->fcntl_cmd, self->fcntl_fd, this->newfd, fd_gen[this->newfd]);
+          }
           	DTRACE_EOF
       - name: Synthetic transport failure (controlled)
         if: ${{ inputs.simulate_failure }}
@@ -154,30 +235,6 @@ jobs:
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
           echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
           test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
-      - name: Untraced control execution (PR head, 5 runs, batch 1 of 4)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          PKG="./internal/service/frontend/api/v1"
-          N=5
-          FAIL_COUNT=0
-          for i in $(seq 1 $N); do
-            set +e
-            $RUNNER_TEMP/dagu.test > "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" 2>&1
-            RC=$?
-            echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename $RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt .txt)" > "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" .txt).txt"
-            echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" .txt).txt"
-            echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" .txt).txt"
-            echo "output=$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_prhead_B_b1_$i.txt" .txt).txt"
-            set -e
-            if [ $RC -ne 0 ]; then echo "UNTRACED RUN $i FAIL B rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "UNTRACED RUN $i PASS B"; fi
-          done
-          echo "UNTRACED_COMPLETED=$N" >> $GITHUB_ENV
-          echo "UNTRACED_FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
-
       - name: Generate evidence manifest
         if: always()
         run: |
@@ -264,46 +321,127 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
           cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          syscall::openat:entry /pid == $target/ { self->oat_has_dirfd[tid] = 1; self->oat_dirfd[tid] = arg0; self->oat_has_path[tid] = 1; self->oat_path[tid] = copyinstr(arg1, 256); }
-          syscall::openat:return /pid == $target && self->oat_has_path[tid]/ {
-            self->oat_ok[tid] = (arg0 >= 0);
-            self->oat_is_basetmp[tid] = (index(self->oat_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->oat_dirfd[tid], self->oat_path[tid], arg0, arg0, self->oat_is_basetmp[tid], timestamp, (self->oat_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->oat_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->oat_has_path[tid] = 0; self->oat_has_dirfd[tid] = 0; self->oat_is_basetmp[tid] = 0; self->oat_ok[tid] = 0;
+          ﻿/*
+           * Shared DTrace helper for FD state tracking in one target process.
+           * Run with: dtrace -q -s dtrace/trace.d -p <pid>
+           */
+          #pragma D option quiet
+          
+          BEGIN
+          {
+              /* Descriptors 0-2 are assumed open when tracing starts. */
+              fd_valid[0] = 1;
+              fd_valid[1] = 1;
+              fd_valid[2] = 1;
+              fd_gen[0] = 1;
+              fd_gen[1] = 2;
+              fd_gen[2] = 3;
+              gen_seq = 3;
           }
-          syscall::open:entry /pid == $target/ { self->open_has_path[tid] = 1; self->open_path[tid] = copyinstr(arg0, 256); }
-          syscall::open:return /pid == $target && self->open_has_path[tid]/ {
-            self->open_ok[tid] = (arg0 >= 0);
-            self->open_is_basetmp[tid] = (index(self->open_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->open_path[tid], arg0, arg0, self->open_is_basetmp[tid], timestamp, (self->open_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->open_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->open_has_path[tid] = 0; self->open_is_basetmp[tid] = 0; self->open_ok[tid] = 0;
+          
+          syscall::open:entry
+          /pid == $target && $target > 0/
+          {
+              self->open_path = copyinstr(arg0);
           }
-          syscall::dup:entry /pid == $target/ { self->dup_has_src[tid] = 1; self->dup_src[tid] = arg0; }
-          syscall::dup:return /pid == $target && self->dup_has_src[tid]/ {
-            self->dup_ok[tid] = (arg0 >= 0);
-            printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu srcgen=%d newgen=%d\n", pid, tid, self->dup_src[tid], arg0, arg0, timestamp, (has_gen[self->dup_src[tid]] ? gen[self->dup_src[tid]] : 0), (self->dup_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->dup_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->dup_has_src[tid] = 0; self->dup_ok[tid] = 0;
+          
+          syscall::open:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->fd = (int)arg0;
+              fd_valid[this->fd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->fd] = gen_seq;
+              printf("target=%d event=open fd=%d gen=%d valid=1 path=%s\n",
+                  $target, this->fd, fd_gen[this->fd], self->open_path);
           }
-          syscall::dup2:entry /pid == $target/ { self->dup2_has_src[tid] = 1; self->dup2_src[tid] = arg0; self->dup2_has_new[tid] = 1; self->dup2_new[tid] = arg1; }
-          syscall::dup2:return /pid == $target && self->dup2_has_src[tid]/ {
-            self->dup2_ok[tid] = (arg0 >= 0);
-            printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->dup2_src[tid], self->dup2_new[tid], arg0, timestamp);
-            if (self->dup2_ok[tid]) { gen[self->dup2_new[tid]]++; has_gen[self->dup2_new[tid]] = 1; }
-            self->dup2_has_src[tid] = 0; self->dup2_has_new[tid] = 0; self->dup2_ok[tid] = 0;
+          
+          syscall::openat:entry
+          /pid == $target && $target > 0/
+          {
+              self->openat_dirfd = arg0;
+              self->openat_path = copyinstr(arg1);
           }
-          syscall::fcntl:entry /pid == $target/ { self->fcn_has_fd[tid] = 1; self->fcn_fd[tid] = arg0; self->fcn_has_cmd[tid] = 1; self->fcn_cmd[tid] = arg1; self->fcn_has_arg[tid] = 1; self->fcn_arg[tid] = arg2; }
-          syscall::fcntl:return /pid == $target && self->fcn_has_fd[tid]/ {
-            self->fcn_ok[tid] = (arg0 >= 0);
-            printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu gen=%d\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp, (has_gen[self->fcn_fd[tid]] ? gen[self->fcn_fd[tid]] : 0));
-            self->fcn_has_fd[tid] = 0; self->fcn_has_cmd[tid] = 0; self->fcn_has_arg[tid] = 0; self->fcn_ok[tid] = 0;
+          
+          syscall::openat:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->fd = (int)arg0;
+              fd_valid[this->fd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->fd] = gen_seq;
+              printf("target=%d event=openat dirfd=%d fd=%d gen=%d valid=1 path=%s\n",
+                  $target, self->openat_dirfd, this->fd, fd_gen[this->fd], self->openat_path);
           }
-          syscall::fcntl:entry /pid == $target && self->fcn_has_fd[tid] && self->fcn_cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
-          syscall::fcntl:return /pid == $target && self->is_dupfd_cloexec[tid]/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp); if (arg0 >= 0) { gen[arg0]++; has_gen[arg0] = 1; } self->is_dupfd_cloexec[tid] = 0; }
-          syscall::close:entry /pid == $target/ { self->close_has_fd[tid] = 1; self->close_fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d gen=%d ts=%llu\n", pid, tid, arg0, (has_gen[arg0] ? gen[arg0] : 0), timestamp); }
-          syscall::close:return /pid == $target && self->close_has_fd[tid]/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d gen=%d ts=%llu\n", pid, tid, self->close_fd[tid], arg0, (has_gen[self->close_fd[tid]] ? gen[self->close_fd[tid]] : 0), timestamp); self->close_has_fd[tid] = 0; }
+          
+          syscall::close:entry
+          /pid == $target && $target > 0/
+          {
+              self->close_fd = arg0;
+          }
+          
+          syscall::close:return
+          /pid == $target && $target > 0 && arg0 == 0/
+          {
+              fd_valid[self->close_fd] = 0;
+              printf("target=%d event=close fd=%d gen=%d valid=0\n",
+                  $target, self->close_fd, fd_gen[self->close_fd]);
+          }
+          
+          syscall::dup:entry
+          /pid == $target && $target > 0/
+          {
+              self->dup_oldfd = arg0;
+          }
+          
+          syscall::dup:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              this->newfd = (int)arg0;
+              fd_valid[this->newfd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->newfd] = gen_seq;
+              printf("target=%d event=dup oldfd=%d newfd=%d gen=%d valid=1\n",
+                  $target, self->dup_oldfd, this->newfd, fd_gen[this->newfd]);
+          }
+          
+          syscall::dup2:entry
+          /pid == $target && $target > 0/
+          {
+              self->dup2_oldfd = arg0;
+              self->dup2_newfd = arg1;
+          }
+          
+          syscall::dup2:return
+          /pid == $target && $target > 0 && arg0 >= 0/
+          {
+              fd_valid[self->dup2_newfd] = fd_valid[self->dup2_oldfd];
+              gen_seq = gen_seq + 1;
+              fd_gen[self->dup2_newfd] = gen_seq;
+              printf("target=%d event=dup2 oldfd=%d newfd=%d gen=%d valid=%d\n",
+                  $target, self->dup2_oldfd, self->dup2_newfd,
+                  fd_gen[self->dup2_newfd], fd_valid[self->dup2_newfd]);
+          }
+          
+          syscall::fcntl:entry
+          /pid == $target && $target > 0/
+          {
+              self->fcntl_fd = arg0;
+              self->fcntl_cmd = arg1;
+              self->fcntl_arg = arg2;
+          }
+          
+          syscall::fcntl:return
+          /pid == $target && $target > 0 && arg0 >= 0 &&
+              (self->fcntl_cmd == 0 || self->fcntl_cmd == 1030)/
+          {
+              this->newfd = (int)arg0;
+              fd_valid[this->newfd] = 1;
+              gen_seq = gen_seq + 1;
+              fd_gen[this->newfd] = gen_seq;
+              printf("target=%d event=fcntl cmd=%d fd=%d newfd=%d gen=%d valid=1\n",
+                  $target, self->fcntl_cmd, self->fcntl_fd, this->newfd, fd_gen[this->newfd]);
+          }
           	DTRACE_EOF
       - name: Synthetic transport failure (controlled)
         if: ${{ inputs.simulate_failure }}
@@ -362,30 +500,6 @@ jobs:
           echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
           echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
           test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
-      - name: Untraced control execution (main baseline, 5 runs, batch 1 of 4)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          PKG="./internal/service/frontend/api/v1"
-          N=5
-          FAIL_COUNT=0
-          for i in $(seq 1 $N); do
-            set +e
-            $RUNNER_TEMP/dagu.test > "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" 2>&1
-            RC=$?
-            echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename $RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt .txt)" > "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" .txt).txt"
-            echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" .txt).txt"
-            echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" .txt).txt"
-            echo "output=$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" >> "$RUNNER_TEMP/evidence/untraced_result_$(basename "$RUNNER_TEMP/evidence/untraced_main_B_b1_$i.txt" .txt).txt"
-            set -e
-            if [ $RC -ne 0 ]; then echo "UNTRACED RUN $i FAIL B rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "UNTRACED RUN $i PASS B"; fi
-          done
-          echo "UNTRACED_COMPLETED=$N" >> $GITHUB_ENV
-          echo "UNTRACED_FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
-
       - name: Generate evidence manifest
         if: always()
         run: |
@@ -435,373 +549,3 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  exp-b-pr-base:
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - name: Assert PR base SHA
-        run: |
-          EXPECTED="f3dbc22da43ac50fa1f7038e8f0fcbed068515ef"
-          echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
-      - name: Install Go 1.27.3
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          rm -f go1.27.3.darwin-arm64.tar.gz
-          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
-          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
-          tar -xzf go1.27.3.darwin-arm64.tar.gz
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
-          go version
-      - name: Clone dagu at PR base (canonical base repo, detached)
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          rm -rf dagu
-          git clone https://github.com/dagucloud/dagu.git dagu
-          cd dagu
-          git fetch origin f3dbc22da43ac50fa1f7038e8f0fcbed068515ef
-          git checkout --detach FETCH_HEAD
-          ACTUAL=$(git rev-parse HEAD)
-          if [ ${#ACTUAL} -ne 40 ]; then echo "FAIL: not a full 40-character SHA: $ACTUAL"; exit 1; fi
-          echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
-          if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
-          echo "SHA_ASSERT_OK: $ACTUAL"
-      - name: Create evidence directory
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence"
-          cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          syscall::openat:entry /pid == $target/ { self->oat_has_dirfd[tid] = 1; self->oat_dirfd[tid] = arg0; self->oat_has_path[tid] = 1; self->oat_path[tid] = copyinstr(arg1, 256); }
-          syscall::openat:return /pid == $target && self->oat_has_path[tid]/ {
-            self->oat_ok[tid] = (arg0 >= 0);
-            self->oat_is_basetmp[tid] = (index(self->oat_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->oat_dirfd[tid], self->oat_path[tid], arg0, arg0, self->oat_is_basetmp[tid], timestamp, (self->oat_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->oat_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->oat_has_path[tid] = 0; self->oat_has_dirfd[tid] = 0; self->oat_is_basetmp[tid] = 0; self->oat_ok[tid] = 0;
-          }
-          syscall::open:entry /pid == $target/ { self->open_has_path[tid] = 1; self->open_path[tid] = copyinstr(arg0, 256); }
-          syscall::open:return /pid == $target && self->open_has_path[tid]/ {
-            self->open_ok[tid] = (arg0 >= 0);
-            self->open_is_basetmp[tid] = (index(self->open_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->open_path[tid], arg0, arg0, self->open_is_basetmp[tid], timestamp, (self->open_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->open_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->open_has_path[tid] = 0; self->open_is_basetmp[tid] = 0; self->open_ok[tid] = 0;
-          }
-          syscall::dup:entry /pid == $target/ { self->dup_has_src[tid] = 1; self->dup_src[tid] = arg0; }
-          syscall::dup:return /pid == $target && self->dup_has_src[tid]/ {
-            self->dup_ok[tid] = (arg0 >= 0);
-            printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu srcgen=%d newgen=%d\n", pid, tid, self->dup_src[tid], arg0, arg0, timestamp, (has_gen[self->dup_src[tid]] ? gen[self->dup_src[tid]] : 0), (self->dup_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->dup_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->dup_has_src[tid] = 0; self->dup_ok[tid] = 0;
-          }
-          syscall::dup2:entry /pid == $target/ { self->dup2_has_src[tid] = 1; self->dup2_src[tid] = arg0; self->dup2_has_new[tid] = 1; self->dup2_new[tid] = arg1; }
-          syscall::dup2:return /pid == $target && self->dup2_has_src[tid]/ {
-            self->dup2_ok[tid] = (arg0 >= 0);
-            printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->dup2_src[tid], self->dup2_new[tid], arg0, timestamp);
-            if (self->dup2_ok[tid]) { gen[self->dup2_new[tid]]++; has_gen[self->dup2_new[tid]] = 1; }
-            self->dup2_has_src[tid] = 0; self->dup2_has_new[tid] = 0; self->dup2_ok[tid] = 0;
-          }
-          syscall::fcntl:entry /pid == $target/ { self->fcn_has_fd[tid] = 1; self->fcn_fd[tid] = arg0; self->fcn_has_cmd[tid] = 1; self->fcn_cmd[tid] = arg1; self->fcn_has_arg[tid] = 1; self->fcn_arg[tid] = arg2; }
-          syscall::fcntl:return /pid == $target && self->fcn_has_fd[tid]/ {
-            self->fcn_ok[tid] = (arg0 >= 0);
-            printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu gen=%d\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp, (has_gen[self->fcn_fd[tid]] ? gen[self->fcn_fd[tid]] : 0));
-            self->fcn_has_fd[tid] = 0; self->fcn_has_cmd[tid] = 0; self->fcn_has_arg[tid] = 0; self->fcn_ok[tid] = 0;
-          }
-          syscall::fcntl:entry /pid == $target && self->fcn_has_fd[tid] && self->fcn_cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
-          syscall::fcntl:return /pid == $target && self->is_dupfd_cloexec[tid]/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp); if (arg0 >= 0) { gen[arg0]++; has_gen[arg0] = 1; } self->is_dupfd_cloexec[tid] = 0; }
-          syscall::close:entry /pid == $target/ { self->close_has_fd[tid] = 1; self->close_fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d gen=%d ts=%llu\n", pid, tid, arg0, (has_gen[arg0] ? gen[arg0] : 0), timestamp); }
-          syscall::close:return /pid == $target && self->close_has_fd[tid]/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d gen=%d ts=%llu\n", pid, tid, self->close_fd[tid], arg0, (has_gen[self->close_fd[tid]] ? gen[self->close_fd[tid]] : 0), timestamp); self->close_has_fd[tid] = 0; }
-          	DTRACE_EOF
-      - name: Synthetic transport failure (controlled)
-        if: ${{ inputs.simulate_failure }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence"
-          echo "SYNTHETIC_TRANSPORT_FAILURE" > "$RUNNER_TEMP/evidence/synthetic-failure.txt"
-          exit 1
-      - name: Compile Dagu test binary (PR base)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
-      - name: DTrace-traced test execution (PR base, 5 runs, batch 1 of 1)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          PKG="./internal/service/frontend/api/v1"
-          N=5
-          FAIL_COUNT=0
-          for i in $(seq 1 $N); do
-            dtrace_out="$RUNNER_TEMP/evidence/dtrace_prbase_B_$i.txt"
-            set +e
-            target_wrapper="$RUNNER_TEMP/evidence/run_target_$(basename "$dtrace_out" .txt).sh"
-            echo '#!/bin/sh' > "$target_wrapper"
-            echo 'exec "$RUNNER_TEMP/dagu.test"' >> "$target_wrapper"
-            chmod +x "$target_wrapper"
-            neg_pid_file="$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).pid"
-            sleep 1 & neg_pid=$!
-            echo "$neg_pid" > "$neg_pid_file"
-            set +e
-            sudo dtrace -s "$RUNNER_TEMP/evidence/trace.d" -c "$target_wrapper" > "$dtrace_out" 2>&1 &
-            dtrace_pid=$!
-            wait "$dtrace_pid"; RC=$?
-            wait "$neg_pid" 2>/dev/null || true
-            set -e
-            if [ -n "$neg_pid" ] && grep -q "pid=$neg_pid" "$dtrace_out"; then
-              echo "NEGATIVE_CONTROL_FAIL pid=$neg_pid" > "$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).txt"
-              RC=99
-            else
-              echo "NEGATIVE_CONTROL_PASS pid=$neg_pid" > "$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).txt"
-            fi
-            echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename "$dtrace_out" .txt)" > "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "dtrace_output=$dtrace_out" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "negative_control_pid=$neg_pid" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            set -e
-            if [ $RC -ne 0 ]; then echo "RUN $i FAIL B dtrace_rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "RUN $i PASS B"; fi
-          done
-          echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
-          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
-          test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
-
-      - name: Generate evidence manifest
-        if: always()
-        run: |
-          set -euo pipefail
-          EVIDENCE_DIR="$RUNNER_TEMP/evidence"
-          cat > "$RUNNER_TEMP/evidence/manifest.py" <<-'MANIFEST_EOF'
-          import os, sys, json, hashlib
-          evidence_dir, run_id, run_attempt, revision = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-          names = sorted(n for n in os.listdir(evidence_dir) if os.path.isfile(os.path.join(evidence_dir, n)))
-          hashes = {}
-          for n in names:
-              p = os.path.join(evidence_dir, n)
-              with open(p, "rb") as f:
-                  hashes[n] = hashlib.sha256(f.read()).hexdigest()
-          summary = {}
-          for n in names:
-              if n.startswith("dtrace_") and n.endswith(".txt"):
-                  text = open(os.path.join(evidence_dir, n)).read()
-                  for key in ("OPENAT", "OPEN ", "DUP2", "DUP ", "FCNTL", "CLOSE_ENTRY", "CLOSE_RETURN"):
-                      summary[key.strip()] = summary.get(key.strip(), 0) + text.count(key)
-          manifest = {
-              "run_id": run_id,
-              "run_attempt": run_attempt,
-              "revision": revision,
-              "workflow": os.environ.get("GITHUB_WORKFLOW"),
-              "job": os.environ.get("GITHUB_JOB"),
-              "go_version": os.environ.get("GO_VERSION"),
-              "arch": os.environ.get("ARCH"),
-              "trace_script_sha256": open(os.path.join(evidence_dir, "trace.d.sha256")).read().split()[0] if os.path.exists(os.path.join(evidence_dir, "trace.d.sha256")) else None,
-              "descriptor_event_summary": summary,
-              "files": names,
-              "sha256": hashes,
-          }
-          with open(os.path.join(evidence_dir, "manifest.json"), "w") as f:
-              json.dump(manifest, f, indent=2)
-          	MANIFEST_EOF
-          sha256sum "$RUNNER_TEMP/evidence/trace.d" | awk '{print $1}' > "$RUNNER_TEMP/evidence/trace.d.sha256"
-          GO_VERSION="$(go version)" ARCH="$(uname -m)" python3 "$RUNNER_TEMP/evidence/manifest.py" "$EVIDENCE_DIR" "${{ github.run_id }}" "${{ github.run_attempt }}" "$ACTUAL_REV"
-          sha256sum "$RUNNER_TEMP/evidence/trace.d" | awk '{print $1}' > "$RUNNER_TEMP/evidence/trace.d.sha256"
-          (cd "$EVIDENCE_DIR" && sha256sum * > SHA256SUMS)
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: evidence-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/evidence
-          retention-days: 7
-          if-no-files-found: error
-
-  exp-b-pr-merge:
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - name: Assert PR merge SHA
-        run: |
-          EXPECTED="bee8de0b96c90d58b86788f1676f27946eceaecc"
-          echo "EXPECTED_REV=$EXPECTED" >> $GITHUB_ENV
-      - name: Install Go 1.27.3
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          rm -f go1.27.3.darwin-arm64.tar.gz
-          curl -fsSL -o go1.27.3.darwin-arm64.tar.gz https://go.dev/dl/go1.27.3.darwin-arm64.tar.gz
-          echo "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2  go1.27.3.darwin-arm64.tar.gz" | shasum -a 256 -c -
-          tar -xzf go1.27.3.darwin-arm64.tar.gz
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          echo "$RUNNER_TEMP/go/bin" >> $GITHUB_PATH
-          go version
-      - name: Clone dagu at PR merge (canonical base repo, detached)
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          rm -rf dagu
-          git clone https://github.com/dagucloud/dagu.git dagu
-          cd dagu
-          git fetch origin bee8de0b96c90d58b86788f1676f27946eceaecc
-          git checkout --detach FETCH_HEAD
-          ACTUAL=$(git rev-parse HEAD)
-          if [ ${#ACTUAL} -ne 40 ]; then echo "FAIL: not a full 40-character SHA: $ACTUAL"; exit 1; fi
-          echo "ACTUAL_REV=$ACTUAL" >> $GITHUB_ENV
-          if [ "$ACTUAL" != "$EXPECTED_REV" ]; then echo "SHA_MISMATCH expected=$EXPECTED_REV actual=$ACTUAL"; exit 1; fi
-          echo "SHA_ASSERT_OK: $ACTUAL"
-      - name: Create evidence directory
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence"
-          cat > "$RUNNER_TEMP/evidence/trace.d" <<-'DTRACE_EOF'
-          syscall::openat:entry /pid == $target/ { self->oat_has_dirfd[tid] = 1; self->oat_dirfd[tid] = arg0; self->oat_has_path[tid] = 1; self->oat_path[tid] = copyinstr(arg1, 256); }
-          syscall::openat:return /pid == $target && self->oat_has_path[tid]/ {
-            self->oat_ok[tid] = (arg0 >= 0);
-            self->oat_is_basetmp[tid] = (index(self->oat_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPENAT pid=%d tid=%d dirfd=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->oat_dirfd[tid], self->oat_path[tid], arg0, arg0, self->oat_is_basetmp[tid], timestamp, (self->oat_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->oat_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->oat_has_path[tid] = 0; self->oat_has_dirfd[tid] = 0; self->oat_is_basetmp[tid] = 0; self->oat_ok[tid] = 0;
-          }
-          syscall::open:entry /pid == $target/ { self->open_has_path[tid] = 1; self->open_path[tid] = copyinstr(arg0, 256); }
-          syscall::open:return /pid == $target && self->open_has_path[tid]/ {
-            self->open_ok[tid] = (arg0 >= 0);
-            self->open_is_basetmp[tid] = (index(self->open_path[tid], "base.yaml.tmp.") != 0);
-            printf("OPEN pid=%d tid=%d path=%s fd=%d retval=%d is_basetmp=%d ts=%llu gen=%d\n", pid, tid, self->open_path[tid], arg0, arg0, self->open_is_basetmp[tid], timestamp, (self->open_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->open_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->open_has_path[tid] = 0; self->open_is_basetmp[tid] = 0; self->open_ok[tid] = 0;
-          }
-          syscall::dup:entry /pid == $target/ { self->dup_has_src[tid] = 1; self->dup_src[tid] = arg0; }
-          syscall::dup:return /pid == $target && self->dup_has_src[tid]/ {
-            self->dup_ok[tid] = (arg0 >= 0);
-            printf("DUP pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu srcgen=%d newgen=%d\n", pid, tid, self->dup_src[tid], arg0, arg0, timestamp, (has_gen[self->dup_src[tid]] ? gen[self->dup_src[tid]] : 0), (self->dup_ok[tid] ? (has_gen[arg0] ? gen[arg0] : 0) : 0));
-            if (self->dup_ok[tid]) { gen[arg0]++; has_gen[arg0] = 1; }
-            self->dup_has_src[tid] = 0; self->dup_ok[tid] = 0;
-          }
-          syscall::dup2:entry /pid == $target/ { self->dup2_has_src[tid] = 1; self->dup2_src[tid] = arg0; self->dup2_has_new[tid] = 1; self->dup2_new[tid] = arg1; }
-          syscall::dup2:return /pid == $target && self->dup2_has_src[tid]/ {
-            self->dup2_ok[tid] = (arg0 >= 0);
-            printf("DUP2 pid=%d tid=%d srcfd=%d newfd=%d retval=%d ts=%llu\n", pid, tid, self->dup2_src[tid], self->dup2_new[tid], arg0, timestamp);
-            if (self->dup2_ok[tid]) { gen[self->dup2_new[tid]]++; has_gen[self->dup2_new[tid]] = 1; }
-            self->dup2_has_src[tid] = 0; self->dup2_has_new[tid] = 0; self->dup2_ok[tid] = 0;
-          }
-          syscall::fcntl:entry /pid == $target/ { self->fcn_has_fd[tid] = 1; self->fcn_fd[tid] = arg0; self->fcn_has_cmd[tid] = 1; self->fcn_cmd[tid] = arg1; self->fcn_has_arg[tid] = 1; self->fcn_arg[tid] = arg2; }
-          syscall::fcntl:return /pid == $target && self->fcn_has_fd[tid]/ {
-            self->fcn_ok[tid] = (arg0 >= 0);
-            printf("FCNTL pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu gen=%d\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp, (has_gen[self->fcn_fd[tid]] ? gen[self->fcn_fd[tid]] : 0));
-            self->fcn_has_fd[tid] = 0; self->fcn_has_cmd[tid] = 0; self->fcn_has_arg[tid] = 0; self->fcn_ok[tid] = 0;
-          }
-          syscall::fcntl:entry /pid == $target && self->fcn_has_fd[tid] && self->fcn_cmd[tid] == 67/ { self->is_dupfd_cloexec[tid] = 1; }
-          syscall::fcntl:return /pid == $target && self->is_dupfd_cloexec[tid]/ { printf("FCNTL_F_DUPFD_CLOEXEC pid=%d tid=%d fd=%d cmd=%d farg=%d retval=%d ts=%llu\n", pid, tid, self->fcn_fd[tid], self->fcn_cmd[tid], self->fcn_arg[tid], arg0, timestamp); if (arg0 >= 0) { gen[arg0]++; has_gen[arg0] = 1; } self->is_dupfd_cloexec[tid] = 0; }
-          syscall::close:entry /pid == $target/ { self->close_has_fd[tid] = 1; self->close_fd[tid] = arg0; printf("CLOSE_ENTRY pid=%d tid=%d fd=%d gen=%d ts=%llu\n", pid, tid, arg0, (has_gen[arg0] ? gen[arg0] : 0), timestamp); }
-          syscall::close:return /pid == $target && self->close_has_fd[tid]/ { printf("CLOSE_RETURN pid=%d tid=%d fd=%d retval=%d gen=%d ts=%llu\n", pid, tid, self->close_fd[tid], arg0, (has_gen[self->close_fd[tid]] ? gen[self->close_fd[tid]] : 0), timestamp); self->close_has_fd[tid] = 0; }
-          	DTRACE_EOF
-      - name: Synthetic transport failure (controlled)
-        if: ${{ inputs.simulate_failure }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence"
-          echo "SYNTHETIC_TRANSPORT_FAILURE" > "$RUNNER_TEMP/evidence/synthetic-failure.txt"
-          exit 1
-      - name: Compile Dagu test binary (PR merge)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          go test -c -o "$RUNNER_TEMP/dagu.test" "./internal/service/frontend/api/v1"
-      - name: DTrace-traced test execution (PR merge, 5 runs, batch 1 of 1)
-        if: ${{ inputs.execute_tests }}
-        run: |
-          set -euo pipefail
-          export PATH="$RUNNER_TEMP/go/bin:$PATH"
-          cd "$RUNNER_TEMP/dagu"
-          PKG="./internal/service/frontend/api/v1"
-          N=5
-          FAIL_COUNT=0
-          for i in $(seq 1 $N); do
-            dtrace_out="$RUNNER_TEMP/evidence/dtrace_prmerge_B_$i.txt"
-            set +e
-            target_wrapper="$RUNNER_TEMP/evidence/run_target_$(basename "$dtrace_out" .txt).sh"
-            echo '#!/bin/sh' > "$target_wrapper"
-            echo 'exec "$RUNNER_TEMP/dagu.test"' >> "$target_wrapper"
-            chmod +x "$target_wrapper"
-            neg_pid_file="$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).pid"
-            sleep 1 & neg_pid=$!
-            echo "$neg_pid" > "$neg_pid_file"
-            set +e
-            sudo dtrace -s "$RUNNER_TEMP/evidence/trace.d" -c "$target_wrapper" > "$dtrace_out" 2>&1 &
-            dtrace_pid=$!
-            wait "$dtrace_pid"; RC=$?
-            wait "$neg_pid" 2>/dev/null || true
-            set -e
-            if [ -n "$neg_pid" ] && grep -q "pid=$neg_pid" "$dtrace_out"; then
-              echo "NEGATIVE_CONTROL_FAIL pid=$neg_pid" > "$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).txt"
-              RC=99
-            else
-              echo "NEGATIVE_CONTROL_PASS pid=$neg_pid" > "$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).txt"
-            fi
-            echo "invocation_id=${{ github.run_id }}-${{ github.run_attempt }}-$(basename "$dtrace_out" .txt)" > "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "revision=$ACTUAL_REV" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "test_command=$RUNNER_TEMP/dagu.test" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "exit_status=$RC" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "dtrace_output=$dtrace_out" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            echo "negative_control_pid=$neg_pid" >> "$RUNNER_TEMP/evidence/result_$(basename "$dtrace_out" .txt).txt"
-            set -e
-            if [ $RC -ne 0 ]; then echo "RUN $i FAIL B dtrace_rc=$RC"; FAIL_COUNT=$((FAIL_COUNT+1)); else echo "RUN $i PASS B"; fi
-          done
-          echo "COMPLETED_INVOCATIONS=$N" >> $GITHUB_ENV
-          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
-          test "$FAIL_COUNT" -eq 0 || { echo "FAIL: $FAIL_COUNT invocation(s) failed"; exit 1; }
-      - name: Generate evidence manifest
-        if: always()
-        run: |
-          set -euo pipefail
-          EVIDENCE_DIR="$RUNNER_TEMP/evidence"
-          cat > "$RUNNER_TEMP/evidence/manifest.py" <<-'MANIFEST_EOF'
-          import os, sys, json, hashlib
-          evidence_dir, run_id, run_attempt, revision = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-          names = sorted(n for n in os.listdir(evidence_dir) if os.path.isfile(os.path.join(evidence_dir, n)))
-          hashes = {}
-          for n in names:
-              p = os.path.join(evidence_dir, n)
-              with open(p, "rb") as f:
-                  hashes[n] = hashlib.sha256(f.read()).hexdigest()
-          summary = {}
-          for n in names:
-              if n.startswith("dtrace_") and n.endswith(".txt"):
-                  text = open(os.path.join(evidence_dir, n)).read()
-                  for key in ("OPENAT", "OPEN ", "DUP2", "DUP ", "FCNTL", "CLOSE_ENTRY", "CLOSE_RETURN"):
-                      summary[key.strip()] = summary.get(key.strip(), 0) + text.count(key)
-          manifest = {
-              "run_id": run_id,
-              "run_attempt": run_attempt,
-              "revision": revision,
-              "workflow": os.environ.get("GITHUB_WORKFLOW"),
-              "job": os.environ.get("GITHUB_JOB"),
-              "go_version": os.environ.get("GO_VERSION"),
-              "arch": os.environ.get("ARCH"),
-              "trace_script_sha256": open(os.path.join(evidence_dir, "trace.d.sha256")).read().split()[0] if os.path.exists(os.path.join(evidence_dir, "trace.d.sha256")) else None,
-              "descriptor_event_summary": summary,
-              "files": names,
-              "sha256": hashes,
-          }
-          with open(os.path.join(evidence_dir, "manifest.json"), "w") as f:
-              json.dump(manifest, f, indent=2)
-          	MANIFEST_EOF
-          sha256sum "$RUNNER_TEMP/evidence/trace.d" | awk '{print $1}' > "$RUNNER_TEMP/evidence/trace.d.sha256"
-          GO_VERSION="$(go version)" ARCH="$(uname -m)" python3 "$RUNNER_TEMP/evidence/manifest.py" "$EVIDENCE_DIR" "${{ github.run_id }}" "${{ github.run_attempt }}" "$ACTUAL_REV"
-          sha256sum "$RUNNER_TEMP/evidence/trace.d" | awk '{print $1}' > "$RUNNER_TEMP/evidence/trace.d.sha256"
-          (cd "$EVIDENCE_DIR" && sha256sum * > SHA256SUMS)
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: evidence-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/evidence
-          retention-days: 7
-          if-no-files-found: error
