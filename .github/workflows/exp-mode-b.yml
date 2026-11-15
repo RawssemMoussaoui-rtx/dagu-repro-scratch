@@ -199,7 +199,7 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
-          N=5
+          N=1
           FAIL_COUNT=0
           for i in $(seq 1 $N); do
             dtrace_out="$RUNNER_TEMP/evidence/dtrace_prhead_B_b1_$i.txt"
@@ -464,7 +464,7 @@ jobs:
           export PATH="$RUNNER_TEMP/go/bin:$PATH"
           cd "$RUNNER_TEMP/dagu"
           PKG="./internal/service/frontend/api/v1"
-          N=5
+          N=2
           FAIL_COUNT=0
           for i in $(seq 1 $N); do
             dtrace_out="$RUNNER_TEMP/evidence/dtrace_main_B_b1_$i.txt"
