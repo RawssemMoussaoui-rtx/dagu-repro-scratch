@@ -206,7 +206,7 @@ jobs:
             set +e
             target_wrapper="$RUNNER_TEMP/evidence/run_target_$(basename "$dtrace_out" .txt).sh"
             echo '#!/bin/sh' > "$target_wrapper"
-            echo 'exec "$RUNNER_TEMP/dagu.test"' >> "$target_wrapper"
+            echo "exec \"$RUNNER_TEMP/dagu.test\"" >> "$target_wrapper"
             chmod +x "$target_wrapper"
             neg_pid_file="$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).pid"
             sleep 1 & neg_pid=$!
@@ -471,7 +471,7 @@ jobs:
             set +e
             target_wrapper="$RUNNER_TEMP/evidence/run_target_$(basename "$dtrace_out" .txt).sh"
             echo '#!/bin/sh' > "$target_wrapper"
-            echo 'exec "$RUNNER_TEMP/dagu.test"' >> "$target_wrapper"
+            echo "exec \"$RUNNER_TEMP/dagu.test\"" >> "$target_wrapper"
             chmod +x "$target_wrapper"
             neg_pid_file="$RUNNER_TEMP/evidence/negative_$(basename "$dtrace_out" .txt).pid"
             sleep 1 & neg_pid=$!
